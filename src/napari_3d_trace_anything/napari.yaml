@@ -1,0 +1,10 @@
+name: napari-3d-trace-anything
+display_name: 3D Trace Anything
+contributions:
+  commands:
+    - id: napari-3d-trace-anything.TraceAnything
+      python_name: napari_3d_trace_anything._widget:TraceAnything
+      title: 3D Trace Anything
+  widgets:
+    - command: napari-3d-trace-anything.TraceAnything
+      display_name: 3D Trace Anything
