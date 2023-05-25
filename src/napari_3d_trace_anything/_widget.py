@@ -47,6 +47,13 @@ class TraceAnything(QWidget):
         self._trace_btn = QPushButton("trace")
         self._trace_btn.clicked.connect(self._trace)
         self.vbox.addWidget(self._trace_btn)
+        # add predict-merge layer selection
+        self.vbox.addWidget(QLabel("merged labels layer"))
+        self._merged_labels_layer_selection = QComboBox()
+        self._merged_labels_layer_selection.addItems(
+            [layer.name for layer in self._viewer.layers if isinstance(layer, napari.layers.labels.labels.Labels)])
+        self._merged_labels_layer_selection.currentTextChanged.connect(self._on_image_layer_changed)
+        self.vbox.addWidget(self._merged_labels_layer_selection)
 
         self._sam_box_layer = self._viewer.add_shapes(name="SAM-Box", edge_color="red", edge_width=2,
                                                       face_color="transparent", ndim=3)
@@ -59,8 +66,14 @@ class TraceAnything(QWidget):
                 self._on_image_layer_changed(None)
                 # add predict-label layer
                 self._predict_label_layer = self._viewer.add_labels(
-                    np.zeros(self._viewer.layers[self._image_layer_selection.currentText()].data.shape, dtype="uint8"), 
+                    np.zeros(self._viewer.layers[self._image_layer_selection.currentText()].data.shape, dtype="uint16"), 
                     name="Predicted-Label", blending="additive", opacity=0.5)
+                self._labels_layer_selection.addItems([layer.name for layer in self._viewer.layers if isinstance(layer, napari.layers.labels.labels.Labels)])
+                self._merged_label_layer = self._viewer.add_labels(
+                    np.zeros(self._viewer.layers[self._image_layer_selection.currentText()].data.shape, dtype="uint16"), 
+                    name="Merged-Label", blending="additive", opacity=0.5)
+                self._merged_labels_layer_selection.addItems([layer.name for layer in self._viewer.layers if isinstance(layer, napari.layers.labels.labels.Labels)])
+                               
             else:
                 print("image type check failed")
                 print("image must be stack")
@@ -82,6 +95,7 @@ class TraceAnything(QWidget):
         self._viewer.layers.events.removed.connect(self._on_layer_list_changed)
 
         self._viewer.bind_key("C", self._clear_current_label)
+        self._viewer.bind_key("A", self._accept_prediction)
 
         self._on_layer_list_changed(None)
 
@@ -188,6 +202,21 @@ class TraceAnything(QWidget):
                 self._viewer.layers[labels_layer_name].refresh()
             else:
                 print("model not loaded")
+
+
+    def _accept_prediction(self, layer):
+        if self._labels_layer_selection.currentText() != "" and self._merged_labels_layer_selection.currentText() != "":
+            print("start label-transfer")
+            input_layer = self._viewer.layers[self._labels_layer_selection.currentText()]
+            output_layer = self._viewer.layers[self._merged_labels_layer_selection.currentText()]
+            if isinstance(input_layer, napari.layers.labels.labels.Labels):
+                max_output_layer_label = np.max(output_layer.data).astype(np.uint16)
+                output_layer.data += ((input_layer.data==1).astype(np.uint8)*(output_layer.data==0).astype(np.uint8)).astype(np.uint16) * (max_output_layer_label+1)
+                self._predict_label_layer.data = np.zeros_like(self._predict_label_layer.data)
+            print("finish label-transfer")
+        else:
+            print("not accepted")
+            pass
 
 
     def lock_controls(self, layer, locked=True):
