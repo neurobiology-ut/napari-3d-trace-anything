@@ -57,6 +57,10 @@ class TraceAnything(QWidget):
             if "stack" in self._image_type:
                 print("image type check passed")
                 self._on_image_layer_changed(None)
+                # add predict-label layer
+                self._predict_label_layer = self._viewer.add_labels(
+                    np.zeros(self._viewer.layers[self._image_layer_selection.currentText()].data.shape, dtype="uint8"), 
+                    name="Predicted-Label", blending="additive", opacity=0.5)
             else:
                 print("image type check failed")
                 print("image must be stack")
