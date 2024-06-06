@@ -71,7 +71,7 @@ class TraceAnything(QWidget):
                 self._labels_layer_selection.addItems([layer.name for layer in self._viewer.layers if isinstance(layer, napari.layers.labels.labels.Labels)])
                 self._merged_label_layer = self._viewer.add_labels(
                     np.zeros(self._viewer.layers[self._image_layer_selection.currentText()].data.shape, dtype="uint16"), 
-                    name="Merged-Label", blending="additive", opacity=0.5)
+                    name="Merged-Label", blending="translucent", opacity=0.5)
                 self._merged_labels_layer_selection.addItems([layer.name for layer in self._viewer.layers if isinstance(layer, napari.layers.labels.labels.Labels)])
                                
             else:
@@ -184,10 +184,11 @@ class TraceAnything(QWidget):
         if len(boxes) == 0:
             boxes = create_box(self._viewer.layers[labels_layer_name].data[prev_slice])
         for coords in boxes:
-            y1 = int(coords[0][1])
-            x1 = int(coords[0][2])
-            y2 = int(coords[2][1])
-            x2 = int(coords[2][2])
+            buffer = 10
+            y1 = max(int(coords[0][1]) - buffer, 0)
+            x1 = max(int(coords[0][2]) - buffer, 0)
+            y2 = min(int(coords[2][1]) + buffer, image.shape[1])
+            x2 = min(int(coords[2][2]) + buffer, image.shape[2])
             print(x1, y1, x2, y2)
             input_box = np.array([x1, y1, x2, y2])
             if self.sam_predictor is not None:
