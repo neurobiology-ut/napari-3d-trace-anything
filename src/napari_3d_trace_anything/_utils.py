@@ -100,3 +100,13 @@ def create_box(labels):
         x2 = int(coords[2][1])
         """
     return boxes
+
+
+
+def change_image_dtype(image):
+    print("dtype: ", image.dtype)
+    if image.dtype == np.uint8:
+        return image
+    else:
+        image = image.astype(np.uint8)
+        return image

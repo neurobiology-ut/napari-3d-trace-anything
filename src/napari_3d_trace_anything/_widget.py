@@ -6,7 +6,7 @@ from qtpy.QtWidgets import QVBoxLayout, QPushButton, QWidget, QComboBox, QLabel,
 from segment_anything import sam_model_registry, SamPredictor
 from tqdm import tqdm
 
-from ._utils import check_image_type, load_model, preprocess, create_box
+from ._utils import check_image_type, load_model, preprocess, create_box, change_image_dtype
 
 
 class TraceAnything(QWidget):
@@ -63,6 +63,7 @@ class TraceAnything(QWidget):
             self._image_type = check_image_type(self._viewer, self._image_layer_selection.currentText())
             if "stack" in self._image_type:
                 print("image type check passed")
+                print("THE VERSION IS FRAP")
                 self._on_image_layer_changed(None)
                 # add predict-label layer
                 self._predict_label_layer = self._viewer.add_labels(
@@ -179,6 +180,7 @@ class TraceAnything(QWidget):
                     break
 
     def _predict(self, image, i, labels_layer_name, prev_slice):
+        image = change_image_dtype(image)
         self.sam_predictor.set_image(preprocess(image, self._image_type, i))
         boxes = [x for x in self._sam_box_layer.data if x[0][0] == i]
         if len(boxes) == 0:
