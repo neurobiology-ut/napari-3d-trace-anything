@@ -104,9 +104,13 @@ def create_box(labels):
 
 
 def change_image_dtype(image):
-    print("dtype: ", image.dtype)
-    if image.dtype == np.uint8:
+    if image.dtype == "uint8":
         return image
     else:
+        image_max = image.max()
+        image_min = image.min()
+        image = image - image_min # [0, N]
+        image = image / (image_max - image_min) # [0, 1]
+        image = image * 255 # [0, 255]
         image = image.astype(np.uint8)
         return image
