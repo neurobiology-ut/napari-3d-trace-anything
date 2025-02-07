@@ -186,11 +186,11 @@ class TraceAnything(QWidget):
         if len(boxes) == 0:
             boxes = create_box(self._viewer.layers[labels_layer_name].data[prev_slice])
         for coords in boxes:
-            buffer = 10
-            y1 = max(int(coords[0][1]) - buffer, 0)
-            x1 = max(int(coords[0][2]) - buffer, 0)
-            y2 = min(int(coords[2][1]) + buffer, image.shape[1])
-            x2 = min(int(coords[2][2]) + buffer, image.shape[2])
+            buffer = 3
+            y1 = max(int(coords[0][1]) + buffer, 0)
+            x1 = max(int(coords[0][2]) + buffer, 0)
+            y2 = min(int(coords[2][1]) - buffer, image.shape[1])
+            x2 = min(int(coords[2][2]) - buffer, image.shape[2])
             print(x1, y1, x2, y2)
             input_box = np.array([x1, y1, x2, y2])
             if self.sam_predictor is not None:
