@@ -132,16 +132,18 @@ def test_process_slice_sequence():
     assert len(boxes_history) == 2  # 2スライス分の履歴
     assert len(masks_history) == 2  # 2スライス分の履歴
 
+    # 最初のスライス（z+1）では3つのボックスが選択される
+    assert len(boxes_history[0]) == 3
+    assert len(masks_history[0]) == 3
+    
+    # 次のスライス（z+2）では前のスライスの各ボックスに対して3つずつ選択される（計9個）
+    assert len(boxes_history[1]) == 9
+    assert len(masks_history[1]) == 9
+    
+    # すべてのボックスの形状を確認
     for boxes in boxes_history:
-        # 各スライスで3つのボックスが選択されていることを確認
-        assert len(boxes) == 3
         for box in boxes:
-            # ボックスの形状が正しいことを確認
             assert box.shape == (4, 3)
-
-    for masks in masks_history:
-        # 各スライスで3つのマスクが選択されていることを確認
-        assert len(masks) == 3
 
     # ボックス位置を描画した画像を保存
     initial_z = 34  # テストで使用するZ位置
@@ -152,7 +154,27 @@ def test_process_slice_sequence():
         if len(img.shape) == 2:
             img = np.stack([img] * 3, axis=2)
         
-        # boxesを描画
+        # すべての候補ボックスを描画（青色）
+        if z_idx == 0:  # 最初のスライスの場合
+            candidates = generate_box_candidates(initial_box)
+        else:  # 次のスライスの場合
+            candidates = []
+            for prev_box in boxes_history[z_idx - 1]:
+                candidates.extend(generate_box_candidates(prev_box))
+            candidates = np.array(candidates)
+        
+        # 候補ボックスを青色で描画
+        for box in candidates:
+            y1, x1 = int(box[0][1]), int(box[0][2])
+            y2, x2 = int(box[2][1]), int(box[2][2])
+            
+            # 青色でボックスを描画
+            img[y1:y2, x1-1:x1+1] = [0, 0, 255]  # 左辺
+            img[y1:y2, x2-1:x2+1] = [0, 0, 255]  # 右辺
+            img[y1-1:y1+1, x1:x2] = [0, 0, 255]  # 上辺
+            img[y2-1:y2+1, x1:x2] = [0, 0, 255]  # 下辺
+        
+        # 選択されたボックスを赤色で描画（上書き）
         for box in boxes:
             y1, x1 = int(box[0][1]), int(box[0][2])
             y2, x2 = int(box[2][1]), int(box[2][2])

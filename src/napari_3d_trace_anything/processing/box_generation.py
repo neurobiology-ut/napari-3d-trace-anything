@@ -1,8 +1,9 @@
 """Box generation utilities for 3D tracing."""
 
 import numpy as np
+from tqdm import tqdm
+
 from .._utils import calculate_iou
-from .._utils import segment_with_sam
 
 
 def generate_box_candidates(box):
@@ -114,10 +115,12 @@ def select_top_boxes(prev_masks, current_masks, boxes, top_k=3):
     prev_mask = prev_masks[0]
     
     # 各ボックスのIoUスコアを計算
+    print("\nIoUスコアの計算:")
     iou_scores = []
-    for curr_mask in current_masks:
+    for i, curr_mask in enumerate(current_masks):
         iou = calculate_iou(prev_mask, curr_mask)
         iou_scores.append(iou)
+        print(f"  マスク {i+1}: IoU = {iou:.3f}")
     
     # スコアの降順でソート
     indices = np.argsort(iou_scores)[::-1]
@@ -148,11 +151,14 @@ def process_slice_sequence(
     Returns:
         tuple: box/maskの履歴
     """
+    print(f"\n処理開始: z={z_start}のスライスから")
+    from .._utils import SAMSegmenter
+    segmenter = SAMSegmenter(sam_predictor)
+
     # 最初のスライスの処理
-    initial_mask = segment_with_sam(
+    initial_mask = segmenter.segment(
         image[z_start],
-        initial_box,
-        sam_predictor
+        initial_box
     )
     current_boxes = [initial_box]
     current_masks = [initial_mask]
@@ -163,26 +169,28 @@ def process_slice_sequence(
     selected_masks_history = []
 
     while z < min(z_start + 3, image.shape[0]):  # 最大2スライス先まで
+        print(f"\nスライス z={z} の処理:")
         next_boxes = []
         next_masks = []
 
         # 前のスライスの各ボックスに対して候補を生成
-        for prev_box in current_boxes:
+        for box_idx, prev_box in enumerate(current_boxes):
+            print(f"\nボックス {box_idx + 1}/{len(current_boxes)} の候補を生成中...")
             candidates = generate_box_candidates(prev_box)
             
             # 各候補に対してセグメンテーション
-            for box in candidates:
-                # SAMが期待する形式 [y1, x1, y2, x2] に変換
+            print("各候補に対してセグメンテーションを実行中...")
+            for box in tqdm(candidates, desc=f"Box {box_idx + 1} Candidates"):
+                # SAMが期待する形式 [x1, y1, x2, y2] に変換
                 sam_box = np.array([
-                    box[0][1],  # y1
                     box[0][2],  # x1
-                    box[2][1],  # y2
-                    box[2][2]   # x2
+                    box[0][1],  # y1
+                    box[2][2],  # x2
+                    box[2][1]   # y2
                 ])
-                mask = segment_with_sam(
+                mask = segmenter.segment(
                     image[z],
-                    sam_box,
-                    sam_predictor)
+                    sam_box)
                 next_boxes.append(box)
                 next_masks.append(mask)
 

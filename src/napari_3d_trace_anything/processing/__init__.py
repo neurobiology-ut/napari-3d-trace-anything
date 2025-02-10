@@ -1,5 +1,13 @@
-"""
-Processing module for napari-3d-trace-anything.
+from .box_generation import (
+    generate_box_candidates,
+    process_slice_sequence,
+    select_top_boxes,
+)
+from .process_slice_sequence_v2 import process_slice_sequence_v2
 
-Core image processing functions.
-"""
+__all__ = [
+    "generate_box_candidates",
+    "process_slice_sequence",
+    "select_top_boxes",
+    "process_slice_sequence_v2",
+]
