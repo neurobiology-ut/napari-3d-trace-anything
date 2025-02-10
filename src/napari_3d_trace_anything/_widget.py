@@ -2,7 +2,14 @@ import napari
 import numpy as np
 import torch
 from napari._qt.qthreading import create_worker
-from qtpy.QtWidgets import QVBoxLayout, QPushButton, QWidget, QComboBox, QLabel, QSpinBox
+from qtpy.QtWidgets import (
+    QVBoxLayout,
+    QPushButton,
+    QWidget,
+    QComboBox,
+    QLabel,
+    QSpinBox,
+)
 from segment_anything import sam_model_registry, SamPredictor
 from tqdm import tqdm
 
@@ -30,19 +37,35 @@ class TraceAnything(QWidget):
         self.vbox.addWidget(QLabel("input image layer"))
         self._image_layer_selection = QComboBox()
         self._image_layer_selection.addItems(
-            [layer.name for layer in self._viewer.layers if isinstance(layer, napari.layers.image.image.Image)])
-        self._image_layer_selection.currentTextChanged.connect(self._on_image_layer_changed)
+            [
+                layer.name
+                for layer in self._viewer.layers
+                if isinstance(layer, napari.layers.image.image.Image)
+            ]
+        )
+        self._image_layer_selection.currentTextChanged.connect(
+            self._on_image_layer_changed
+        )
         self.vbox.addWidget(self._image_layer_selection)
         self.vbox.addWidget(QLabel("output labels layer"))
         self._labels_layer_selection = QComboBox()
         self._labels_layer_selection.addItems(
-            [layer.name for layer in self._viewer.layers if isinstance(layer, napari.layers.labels.labels.Labels)])
+            [
+                layer.name
+                for layer in self._viewer.layers
+                if isinstance(layer, napari.layers.labels.labels.Labels)
+            ]
+        )
         self.vbox.addWidget(self._labels_layer_selection)
         self.vbox.addWidget(QLabel("start slice"))
-        self._start_slice = QSpinBox(minimum=self._minimum_slice, maximum=self._maximum_slice, value=0)
+        self._start_slice = QSpinBox(
+            minimum=self._minimum_slice, maximum=self._maximum_slice, value=0
+        )
         self.vbox.addWidget(self._start_slice)
         self.vbox.addWidget(QLabel("end slice"))
-        self._end_slice = QSpinBox(minimum=self._minimum_slice, maximum=self._maximum_slice, value=0)
+        self._end_slice = QSpinBox(
+            minimum=self._minimum_slice, maximum=self._maximum_slice, value=0
+        )
         self.vbox.addWidget(self._end_slice)
         self._trace_btn = QPushButton("trace")
         self._trace_btn.clicked.connect(self._trace)
@@ -51,29 +74,75 @@ class TraceAnything(QWidget):
         self.vbox.addWidget(QLabel("merged labels layer"))
         self._merged_labels_layer_selection = QComboBox()
         self._merged_labels_layer_selection.addItems(
-            [layer.name for layer in self._viewer.layers if isinstance(layer, napari.layers.labels.labels.Labels)])
-        self._merged_labels_layer_selection.currentTextChanged.connect(self._on_image_layer_changed)
+            [
+                layer.name
+                for layer in self._viewer.layers
+                if isinstance(layer, napari.layers.labels.labels.Labels)
+            ]
+        )
+        self._merged_labels_layer_selection.currentTextChanged.connect(
+            self._on_image_layer_changed
+        )
         self.vbox.addWidget(self._merged_labels_layer_selection)
 
-        self._sam_box_layer = self._viewer.add_shapes(name="SAM-Box", edge_color="red", edge_width=2,
-                                                      face_color="transparent", ndim=3)
+        self._sam_box_layer = self._viewer.add_shapes(
+            name="SAM-Box",
+            edge_color="red",
+            edge_width=2,
+            face_color="transparent",
+            ndim=3,
+        )
         self.lock_controls(self._sam_box_layer)
 
         if self._image_layer_selection.currentText() != "":
-            self._image_type = check_image_type(self._viewer, self._image_layer_selection.currentText())
+            self._image_type = check_image_type(
+                self._viewer, self._image_layer_selection.currentText()
+            )
             if "stack" in self._image_type:
                 print("image type check passed")
                 self._on_image_layer_changed(None)
                 # add predict-label layer
                 self._predict_label_layer = self._viewer.add_labels(
-                    np.zeros(self._viewer.layers[self._image_layer_selection.currentText()].data.shape, dtype="uint16"), 
-                    name="Predicted-Label", blending="additive", opacity=0.5)
-                self._labels_layer_selection.addItems([layer.name for layer in self._viewer.layers if isinstance(layer, napari.layers.labels.labels.Labels)])
+                    np.zeros(
+                        self._viewer.layers[
+                            self._image_layer_selection.currentText()
+                        ].data.shape,
+                        dtype="uint16",
+                    ),
+                    name="Predicted-Label",
+                    blending="additive",
+                    opacity=0.5,
+                )
+                self._labels_layer_selection.addItems(
+                    [
+                        layer.name
+                        for layer in self._viewer.layers
+                        if isinstance(
+                            layer, napari.layers.labels.labels.Labels
+                        )
+                    ]
+                )
                 self._merged_label_layer = self._viewer.add_labels(
-                    np.zeros(self._viewer.layers[self._image_layer_selection.currentText()].data.shape, dtype="uint16"), 
-                    name="Merged-Label", blending="additive", opacity=0.5)
-                self._merged_labels_layer_selection.addItems([layer.name for layer in self._viewer.layers if isinstance(layer, napari.layers.labels.labels.Labels)])
-                               
+                    np.zeros(
+                        self._viewer.layers[
+                            self._image_layer_selection.currentText()
+                        ].data.shape,
+                        dtype="uint16",
+                    ),
+                    name="Merged-Label",
+                    blending="additive",
+                    opacity=0.5,
+                )
+                self._merged_labels_layer_selection.addItems(
+                    [
+                        layer.name
+                        for layer in self._viewer.layers
+                        if isinstance(
+                            layer, napari.layers.labels.labels.Labels
+                        )
+                    ]
+                )
+
             else:
                 print("image type check failed")
                 print("image must be stack")
@@ -82,16 +151,18 @@ class TraceAnything(QWidget):
         self.show()
 
         if torch.cuda.is_available():
-            self.device = 'cuda'
+            self.device = "cuda"
         elif torch.backends.mps.is_available():
-            self.device = 'mps'
+            self.device = "mps"
         else:
-            self.device = 'cpu'
+            self.device = "cpu"
 
         self._sam_model = None
         self.sam_predictor = None
 
-        self._viewer.layers.events.inserted.connect(self._on_layer_list_changed)
+        self._viewer.layers.events.inserted.connect(
+            self._on_layer_list_changed
+        )
         self._viewer.layers.events.removed.connect(self._on_layer_list_changed)
 
         self._viewer.bind_key("C", self._clear_current_label)
@@ -101,9 +172,18 @@ class TraceAnything(QWidget):
 
     def _clear_current_label(self, event):
         self._current_slice, _, _ = self._viewer.dims.current_step
-        if self._viewer.layers[self._labels_layer_selection.currentText()].data[self._current_slice].sum() > 0:
-            self._viewer.layers[self._labels_layer_selection.currentText()].data[self._current_slice] = 0
-            self._viewer.layers[self._labels_layer_selection.currentText()].refresh()
+        if (
+            self._viewer.layers[self._labels_layer_selection.currentText()]
+            .data[self._current_slice]
+            .sum()
+            > 0
+        ):
+            self._viewer.layers[
+                self._labels_layer_selection.currentText()
+            ].data[self._current_slice] = 0
+            self._viewer.layers[
+                self._labels_layer_selection.currentText()
+            ].refresh()
 
     def _on_layer_list_changed(self, event):
         if event is not None:
@@ -111,13 +191,31 @@ class TraceAnything(QWidget):
             if isinstance(event.value, napari.layers.image.image.Image):
                 self._image_layer_selection.clear()
                 self._image_layer_selection.addItems(
-                    [layer.name for layer in self._viewer.layers if isinstance(layer, napari.layers.image.image.Image)])
-                [self._viewer.layers.move(i, 0) for i, layer in enumerate(self._viewer.layers) if
-                 isinstance(layer, napari.layers.image.image.Image)]
+                    [
+                        layer.name
+                        for layer in self._viewer.layers
+                        if isinstance(layer, napari.layers.image.image.Image)
+                    ]
+                )
+                [
+                    self._viewer.layers.move(i, 0)
+                    for i, layer in enumerate(self._viewer.layers)
+                    if isinstance(layer, napari.layers.image.image.Image)
+                ]
                 self._on_image_layer_changed(None)
             elif isinstance(event.value, napari.layers.labels.labels.Labels):
                 self._labels_layer_selection.clear()
-                self._labels_layer_selection.addItems([layer.name for layer in self._viewer.layers if (isinstance(layer, napari.layers.labels.labels.Labels))])
+                self._labels_layer_selection.addItems(
+                    [
+                        layer.name
+                        for layer in self._viewer.layers
+                        if (
+                            isinstance(
+                                layer, napari.layers.labels.labels.Labels
+                            )
+                        )
+                    ]
+                )
             else:
                 pass
 
@@ -130,16 +228,23 @@ class TraceAnything(QWidget):
 
     def _on_image_layer_changed(self, index):
         print("image_layer_changed")
-        self._image_type = check_image_type(self._viewer, self._image_layer_selection.currentText())
+        self._image_type = check_image_type(
+            self._viewer, self._image_layer_selection.currentText()
+        )
         if "stack" in self._image_type:
-            self._maximum_slice = self._viewer.layers[self._image_layer_selection.currentText()].data.shape[0] - 1
+            self._maximum_slice = (
+                self._viewer.layers[
+                    self._image_layer_selection.currentText()
+                ].data.shape[0]
+                - 1
+            )
             self._start_slice.setMaximum(self._maximum_slice)
             self._end_slice.setMaximum(self._maximum_slice)
 
     def _trace(self):
         if self._worker:
             if self._worker.is_running:
-                self._trace_btn.setText('stopping...')
+                self._trace_btn.setText("stopping...")
                 self._stop_predicting = True
                 self._worker.send(self._stop_predicting)
             else:
@@ -150,29 +255,37 @@ class TraceAnything(QWidget):
             self._worker.finished.connect(self._delete_worker)
             self._worker.start()
             self._stop_predicting = False
-            self._trace_btn.setText('stop')
+            self._trace_btn.setText("stop")
 
     def _delete_worker(self):
         del self._worker
         self._worker = None
-        self._trace_btn.setText('trace')
+        self._trace_btn.setText("trace")
 
     def _tracer(self):
         print("start tracing")
-        image = self._viewer.layers[self._image_layer_selection.currentText()].data
+        image = self._viewer.layers[
+            self._image_layer_selection.currentText()
+        ].data
         print("target_image_shape: ", image.shape)
         print("start slice: ", self._start_slice.value())
         print("end slice: ", self._end_slice.value())
         print(self._sam_box_layer.data)
         labels_layer_name = self._labels_layer_selection.currentText()
         if self._start_slice.value() > self._end_slice.value():
-            for i in tqdm(range(self._start_slice.value(), self._end_slice.value() - 1, -1)):
+            for i in tqdm(
+                range(
+                    self._start_slice.value(), self._end_slice.value() - 1, -1
+                )
+            ):
                 self._predict(image, i, labels_layer_name, i + 1)
                 stop_predicting = yield
                 if stop_predicting:
                     break
         else:
-            for i in tqdm(range(self._start_slice.value(), self._end_slice.value() + 1)):
+            for i in tqdm(
+                range(self._start_slice.value(), self._end_slice.value() + 1)
+            ):
                 self._predict(image, i, labels_layer_name, i - 1)
                 stop_predicting = yield
                 if stop_predicting:
@@ -182,7 +295,9 @@ class TraceAnything(QWidget):
         self.sam_predictor.set_image(preprocess(image, self._image_type, i))
         boxes = [x for x in self._sam_box_layer.data if x[0][0] == i]
         if len(boxes) == 0:
-            boxes = create_box(self._viewer.layers[labels_layer_name].data[prev_slice])
+            boxes = create_box(
+                self._viewer.layers[labels_layer_name].data[prev_slice]
+            )
         for coords in boxes:
             y1 = int(coords[0][1])
             x1 = int(coords[0][2])
@@ -197,38 +312,52 @@ class TraceAnything(QWidget):
                     box=input_box[None, :],
                     multimask_output=False,
                 )
-                self._viewer.layers[labels_layer_name].data[i] = self._viewer.layers[labels_layer_name].data[i] + masks[
-                    0] * 1
+                self._viewer.layers[labels_layer_name].data[i] = (
+                    self._viewer.layers[labels_layer_name].data[i]
+                    + masks[0] * 1
+                )
                 self._viewer.layers[labels_layer_name].refresh()
             else:
                 print("model not loaded")
 
-
     def _accept_prediction(self, layer):
-        if self._labels_layer_selection.currentText() != "" and self._merged_labels_layer_selection.currentText() != "":
+        if (
+            self._labels_layer_selection.currentText() != ""
+            and self._merged_labels_layer_selection.currentText() != ""
+        ):
             print("start label-transfer")
-            input_layer = self._viewer.layers[self._labels_layer_selection.currentText()]
-            output_layer = self._viewer.layers[self._merged_labels_layer_selection.currentText()]
+            input_layer = self._viewer.layers[
+                self._labels_layer_selection.currentText()
+            ]
+            output_layer = self._viewer.layers[
+                self._merged_labels_layer_selection.currentText()
+            ]
             if isinstance(input_layer, napari.layers.labels.labels.Labels):
-                max_output_layer_label = np.max(output_layer.data).astype(np.uint16)
-                output_layer.data += ((input_layer.data==1).astype(np.uint8)*(output_layer.data==0).astype(np.uint8)).astype(np.uint16) * (max_output_layer_label+1)
-                self._predict_label_layer.data = np.zeros_like(self._predict_label_layer.data)
+                max_output_layer_label = np.max(output_layer.data).astype(
+                    np.uint16
+                )
+                output_layer.data += (
+                    (input_layer.data == 1).astype(np.uint8)
+                    * (output_layer.data == 0).astype(np.uint8)
+                ).astype(np.uint16) * (max_output_layer_label + 1)
+                self._predict_label_layer.data = np.zeros_like(
+                    self._predict_label_layer.data
+                )
             print("finish label-transfer")
         else:
             print("not accepted")
             pass
 
-
     def lock_controls(self, layer, locked=True):
         widget_list = [
-            'ellipse_button',
-            'line_button',
-            'path_button',
-            'vertex_remove_button',
-            'vertex_insert_button',
-            'move_back_button',
-            'move_front_button',
-            'polygon_button',
+            "ellipse_button",
+            "line_button",
+            "path_button",
+            "vertex_remove_button",
+            "vertex_insert_button",
+            "move_back_button",
+            "move_front_button",
+            "polygon_button",
         ]
         qctrl = self._viewer.window.qt_viewer.controls.widgets[layer]
         for wdg in widget_list:
@@ -236,6 +365,8 @@ class TraceAnything(QWidget):
 
     def print_corner_value(self):
         print(self._viewer.dims.current_step)
-        print(self._viewer.layers[self._image_layer_selection.currentText()].corner_pixels)
-
-
+        print(
+            self._viewer.layers[
+                self._image_layer_selection.currentText()
+            ].corner_pixels
+        )

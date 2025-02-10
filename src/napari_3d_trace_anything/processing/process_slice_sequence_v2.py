@@ -5,6 +5,70 @@ from skimage.measure import regionprops
 from .._utils import SAMSegmenter, calculate_iou, create_box
 
 
+def optimize_segmentation(
+    image_slice,
+    initial_box,
+    segmenter,
+    mergin_ratio=0.0,
+):
+    """1つのスライスに対してセグメンテーションを最適化する.
+
+    boxとセグメンテーションを繰り返し最適化し、
+    前回のセグメンテーション結果とのIoUが0.99を超えるまで処理を継続する.
+
+    Args:
+        image_slice (np.ndarray): 2D画像スライス
+        initial_box (np.ndarray): 初期バウンディングボックス
+        segmenter: SAMセグメンター
+        mergin_ratio (float): バウンディングボックスのマージン比率
+
+    Returns:
+        tuple: (optimized_box, optimized_mask)
+            - optimized_box: 最適化されたバウンディングボックス
+            - optimized_mask: 最適化されたマスク
+    """
+    # 最初のセグメンテーション
+    current_mask = segmenter.segment(image_slice, initial_box)
+    current_box = initial_box
+    
+    iteration = 1
+    prev_mask = None
+    iou_score = 0
+    
+    # IoUが0.99を超えるまで繰り返し
+    while True:
+        print(f"  反復 {iteration}:")
+        
+        if prev_mask is not None:
+            iou_score = calculate_iou(current_mask, prev_mask)
+            print(f"    IoU: {iou_score:.4f}")
+            
+            if iou_score > 0.99:
+                print("    収束条件を満たしました")
+                break
+        
+        prev_mask = current_mask
+        
+        # 現在のマスクからRegionPropsを計算
+        label_image = current_mask.astype(np.uint8)
+        props = regionprops(label_image)[0]
+        
+        # 新しいboxを作成
+        box_coords = create_box(props, mergin_ratio)
+        current_box = box_coords
+        
+        # 新しいマスクを生成
+        current_mask = segmenter.segment(image_slice, current_box)
+        
+        iteration += 1
+        
+        if iteration > 10:  # 最大反復回数
+            print("    最大反復回数に達しました")
+            break
+    
+    return current_box, current_mask
+
+
 def process_slice_sequence_v2(
     image,
     initial_box,
@@ -53,49 +117,18 @@ def process_slice_sequence_v2(
     for z in range(z_start, z_end + 1):
         print(f"\nスライス z={z} の処理:")
         
-        # 最初のセグメンテーション
-        current_mask = segmenter.segment(image[z], current_box)
-        
-        iteration = 1
-        prev_mask = None
-        iou_score = 0
-        
-        # IoUが0.99を超えるまで繰り返し
-        while True:
-            print(f"  反復 {iteration}:")
-            
-            if prev_mask is not None:
-                iou_score = calculate_iou(current_mask, prev_mask)
-                print(f"    IoU: {iou_score:.4f}")
-                
-                if iou_score > 0.99:
-                    print("    収束条件を満たしました")
-                    break
-            
-            prev_mask = current_mask
-            
-            # 現在のマスクからRegionPropsを計算
-            label_image = current_mask.astype(np.uint8)
-            props = regionprops(label_image)[0]
-            
-            # 新しいboxを作成
-            box_coords = create_box(props, mergin_ratio)
-            current_box = box_coords
-            
-            # 新しいマスクを生成
-            current_mask = segmenter.segment(image[z], current_box)
-            
-            iteration += 1
-            
-            if iteration > 10:  # 最大反復回数
-                print("    最大反復回数に達しました")
-                break
+        # セグメンテーションを最適化
+        current_box, current_mask = optimize_segmentation(
+            image[z],
+            current_box,
+            segmenter,
+            mergin_ratio
+        )
         
         # 結果を保存
         boxes_history.append(current_box)
         masks_history.append(current_mask)
         
-        # 次のスライスの初期boxとして現在のboxを使用
-        current_box = box_coords
+        # current_boxは既に最適化されているので、次のスライスの初期boxとしてそのまま使用
     
     return boxes_history, masks_history
