@@ -9,11 +9,21 @@ from qtpy.QtWidgets import (
     QComboBox,
     QLabel,
     QSpinBox,
+    QDoubleSpinBox,
+    QCheckBox,
 )
 from segment_anything import sam_model_registry, SamPredictor
+from skimage.measure import label
 from tqdm import tqdm
-
-from ._utils import check_image_type, load_model, preprocess, create_box
+from ._utils import (
+    check_image_type,
+    load_model,
+    preprocess,
+    create_boxes_list,
+    SAMSegmenter,
+)
+from .processing.process_slice_sequence_v2 import optimize_segmentation
+from .processing import process_slice_sequence_v2
 
 
 class TraceAnything(QWidget):
@@ -67,6 +77,19 @@ class TraceAnything(QWidget):
             minimum=self._minimum_slice, maximum=self._maximum_slice, value=0
         )
         self.vbox.addWidget(self._end_slice)
+        # add margin ratio input (optional)
+        self.vbox.addWidget(QLabel("margin ratio (optional)"))
+        self._margin_ratio = QDoubleSpinBox()
+        self._margin_ratio.setRange(-1.0, 1.0)
+        self._margin_ratio.setValue(0.0)
+        self._margin_ratio.setSingleStep(0.1)
+        self.vbox.addWidget(self._margin_ratio)
+        
+        # self-optimizationのチェックボックスを追加
+        self.vbox.addWidget(QLabel("self-optimization"))
+        self._self_optimization = QCheckBox()
+        self.vbox.addWidget(self._self_optimization)
+        
         self._trace_btn = QPushButton("trace")
         self._trace_btn.clicked.connect(self._trace)
         self.vbox.addWidget(self._trace_btn)
@@ -209,10 +232,9 @@ class TraceAnything(QWidget):
                     [
                         layer.name
                         for layer in self._viewer.layers
-                        if (
-                            isinstance(
-                                layer, napari.layers.labels.labels.Labels
-                            )
+                        if isinstance(
+                            layer,
+                            napari.layers.labels.labels.Labels
                         )
                     ]
                 )
@@ -224,6 +246,8 @@ class TraceAnything(QWidget):
         self._sam_model = load_model(model_name)
         self._sam_model.to(device=self.device)
         self.sam_predictor = SamPredictor(self._sam_model)
+        # SAMSegmenterインスタンスの作成
+        self.sam_segmenter = SAMSegmenter(self.sam_predictor)
         print("model loaded")
 
     def _on_image_layer_changed(self, index):
@@ -292,30 +316,31 @@ class TraceAnything(QWidget):
                     break
 
     def _predict(self, image, i, labels_layer_name, prev_slice):
-        self.sam_predictor.set_image(preprocess(image, self._image_type, i))
+        preprocessed_image = preprocess(image, self._image_type, i)
         boxes = [x for x in self._sam_box_layer.data if x[0][0] == i]
         if len(boxes) == 0:
-            boxes = create_box(
-                self._viewer.layers[labels_layer_name].data[prev_slice]
-            )
+            labels = label(
+                self._viewer.layers[labels_layer_name].data[prev_slice] > 0
+                )
+            margin_ratio = self._margin_ratio.value()
+            boxes = create_boxes_list(labels, margin_ratio=margin_ratio)
         for coords in boxes:
-            y1 = int(coords[0][1])
-            x1 = int(coords[0][2])
-            y2 = int(coords[2][1])
-            x2 = int(coords[2][2])
-            print(x1, y1, x2, y2)
-            input_box = np.array([x1, y1, x2, y2])
-            if self.sam_predictor is not None:
-                masks, _, _ = self.sam_predictor.predict(
-                    point_coords=None,
-                    point_labels=None,
-                    box=input_box[None, :],
-                    multimask_output=False,
-                )
-                self._viewer.layers[labels_layer_name].data[i] = (
-                    self._viewer.layers[labels_layer_name].data[i]
-                    + masks[0] * 1
-                )
+            if self.sam_segmenter is not None:
+                if self._self_optimization.isChecked():
+                    # optimize_segmentationを使用
+                    _, mask = process_slice_sequence_v2.optimize_segmentation(
+                        preprocessed_image,
+                        coords,
+                        self.sam_segmenter,
+                        self._margin_ratio.value()
+                    )
+                else:
+                    mask = self.sam_segmenter.segment(
+                        preprocessed_image, coords)
+                viewer_layer = self._viewer.layers[labels_layer_name]
+                layer_data = viewer_layer.data
+                layer_data[i] = layer_data[i] + mask * 1
+                viewer_layer.data = layer_data
                 self._viewer.layers[labels_layer_name].refresh()
             else:
                 print("model not loaded")

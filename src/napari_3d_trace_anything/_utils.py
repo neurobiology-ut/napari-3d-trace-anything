@@ -101,11 +101,12 @@ def create_box(props, mergin_ratio=0.0):
     # return [minc, minr, maxc, maxr]  # x1, y1, x2, y2の順序
 
 
-def create_boxes_list(labels):
+def create_boxes_list(labels, mergin_ratio=0.0):
     """ラベル画像から複数のバウンディングボックスを作成
 
     Args:
         labels: ラベル付けされた画像
+        mergin_ratio (float): バウンディングボックスのマージン比率
 
     Returns:
         list: [[z, y1, x1], [z, y1, x2], [z, y2, x2], [z, y2, x1]]
@@ -113,15 +114,15 @@ def create_boxes_list(labels):
     """
     boxes = []
     for props in regionprops(labels):
-        minr, minc, maxr, maxc = props.bbox
-        box = np.array(
-            [
-                [0, minr, minc],
-                [0, minr, maxc],
-                [0, maxr, maxc],
-                [0, maxr, minc],
-            ]
-        )
+        # create_boxを使用してバウンディングボックスを取得
+        box_coords = create_box(props, mergin_ratio)
+        # 座標形式を変換
+        box = np.array([
+            [0, box_coords[1], box_coords[0]],  # [z, y1, x1]
+            [0, box_coords[1], box_coords[2]],  # [z, y1, x2]
+            [0, box_coords[3], box_coords[2]],  # [z, y2, x2]
+            [0, box_coords[3], box_coords[0]],  # [z, y2, x1]
+        ])
         boxes.append(box)
     return boxes
 
