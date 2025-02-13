@@ -10,6 +10,7 @@ def optimize_segmentation(
     initial_box,
     segmenter,
     mergin_ratio=0.0,
+    mask_input=None,
 ):
     """1つのスライスに対してセグメンテーションを最適化する.
 
@@ -21,6 +22,7 @@ def optimize_segmentation(
         initial_box (np.ndarray): 初期バウンディングボックス
         segmenter: SAMセグメンター
         mergin_ratio (float): バウンディングボックスのマージン比率
+        mask_input (np.ndarray): 入力マスク (default: None)
 
     Returns:
         tuple: (optimized_box, optimized_mask)
@@ -28,7 +30,7 @@ def optimize_segmentation(
             - optimized_mask: 最適化されたマスク
     """
     # 最初のセグメンテーションをしてそれは維持しておく
-    initial_mask = segmenter.segment(image_slice, initial_box)
+    initial_mask = segmenter.segment(image_slice, initial_box, mask_input)
     current_mask = initial_mask
 
     current_box = initial_box

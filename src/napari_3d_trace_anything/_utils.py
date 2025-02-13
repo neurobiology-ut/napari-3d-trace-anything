@@ -20,12 +20,13 @@ class SAMSegmenter:
         self.predictor = predictor
         self.current_image = None
 
-    def segment(self, image, box):
+    def segment(self, image, box, mask_input=None):
         """画像のセグメンテーションを行う
 
         Args:
             image (np.ndarray): 入力画像
             box (np.ndarray or list): バウンディングボックス
+            mask_input (np.ndarray): 入力マスク (default: None)
 
         Returns:
             np.ndarray: セグメンテーションマスク
@@ -62,7 +63,8 @@ class SAMSegmenter:
         # マスクの生成
         masks, _, _ = self.predictor.predict(
             box=input_box[None, :],
-            multimask_output=False
+            multimask_output=False,
+            mask_input=mask_input,
         )
 
         return masks[0]

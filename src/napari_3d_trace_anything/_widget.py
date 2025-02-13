@@ -14,6 +14,7 @@ from qtpy.QtWidgets import (
 )
 from segment_anything import sam_model_registry, SamPredictor
 from skimage.measure import label
+from skimage.transform import resize
 from tqdm import tqdm
 from ._utils import (
     check_image_type,
@@ -324,8 +325,10 @@ class TraceAnything(QWidget):
                 )
             margin_ratio = self._margin_ratio.value()
             boxes = create_boxes_list(labels, margin_ratio=margin_ratio)
+        else:
+            labels = None
 
-        for coords in boxes:
+        for idx, coords in enumerate(boxes):
             if self.sam_segmenter is not None:
                 # クロップが必要かどうかを判断
                 should_crop = width > 1024 or height > 1024
@@ -367,13 +370,48 @@ class TraceAnything(QWidget):
 
                     # クロップされた画像を作成
                     cropped_image = preprocessed_image[y1:y2, x1:x2]
+                    # 1024x1024にpaddingをする
+                    cropped_image = np.pad(
+                        cropped_image,
+                        [
+                            (0, 1024 - cropped_image.shape[0]),
+                            (0, 1024 - cropped_image.shape[1]),
+                        ],
+                        mode="constant",
+                    )
+                    # labelsもクロップ
+                    if labels is not None:
+                        cropped_labels = labels[y1:y2, x1:x2]
+                        cropped_labels = np.pad(
+                            cropped_labels,
+                            [
+                                (0, 1024 - cropped_labels.shape[0]),
+                                (0, 1024 - cropped_labels.shape[1]),
+                            ],
+                            mode="constant",
+                        )
+                        # skimageで256x256にリサイズ
+                        cropped_labels = resize(
+                            cropped_labels,
+                            (256, 256),
+                            order=0,
+                            preserve_range=True,
+                            anti_aliasing=False,
+                        ).astype(np.uint8)
+                        mask = cropped_labels == (idx + 1)
+                        # (C, H, W)に変換
+                        mask = mask[None, :, :]
+
+                    else:
+                        cropped_labels = None
+                        mask = None
 
                     # ボックス座標をクロップ後の座標系に変換
                     cropped_coords = [
                         x1_box - x1,  # x1
                         y1_box - y1,  # y1
-                        x2_box - x1,   # x2
-                        y2_box - y1  # y2
+                        x2_box - x1,  # x2
+                        y2_box - y1   # y2
                     ]
 
                     print(f"coords after crop (x, y): {cropped_coords}")
@@ -384,11 +422,12 @@ class TraceAnything(QWidget):
                             cropped_image,
                             cropped_coords,
                             self.sam_segmenter,
-                            self._margin_ratio.value()
+                            self._margin_ratio.value(),
+                            mask_input=mask
                         )
                     else:
                         cropped_mask = self.sam_segmenter.segment(
-                            cropped_image, cropped_coords)
+                            cropped_image, cropped_coords, mask_input=mask)
 
                     # マスクをオリジナルサイズに戻す
                     mask = np.zeros((height, width), dtype=bool)
@@ -406,7 +445,7 @@ class TraceAnything(QWidget):
                     else:
                         mask = self.sam_segmenter.segment(
                             preprocessed_image, coords)
-
+                print("add mask to labels layer")
                 viewer_layer = self._viewer.layers[labels_layer_name]
                 layer_data = viewer_layer.data
                 layer_data[i] = layer_data[i] + mask * 1
