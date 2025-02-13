@@ -1,7 +1,7 @@
 """Process slice sequence with iterative optimization."""
 
 import numpy as np
-from skimage.measure import regionprops
+from skimage.measure import regionprops, label
 from .._utils import SAMSegmenter, calculate_iou, create_box
 
 
@@ -51,7 +51,15 @@ def optimize_segmentation(
         
         # 現在のマスクからRegionPropsを計算
         label_image = current_mask.astype(np.uint8)
-        props = regionprops(label_image)[0]
+        # 領域のプロパティを計算
+        props_list = regionprops(label_image)
+        
+        # 領域が見つからない場合はエラー
+        if not props_list:
+            raise ValueError("セグメンテーション結果から領域が検出されませんでした")
+            
+        # 最大面積の領域を選択
+        props = max(props_list, key=lambda p: p.area)
         
         # 新しいboxを作成
         box_coords = create_box(props, mergin_ratio)
@@ -66,7 +74,19 @@ def optimize_segmentation(
             print("    最大反復回数に達しました")
             break
     
-    return current_box, current_mask
+    # 最終的なマスクから最大面積のセグメントのみを抽出
+    label_image = label(current_mask.astype(np.uint8) > 0)
+    props_list = regionprops(label_image)
+    if props_list:
+        # 最大面積の領域を持つセグメントのみを残す
+        if len(props_list) > 1:
+            print("    最大面積のセグメントのみを残します")
+        max_area_props = max(props_list, key=lambda p: p.area)
+        final_mask = np.zeros_like(current_mask)
+        final_mask[label_image == max_area_props.label] = 1
+        return current_box, final_mask
+    
+    return current_box, current_mask  # セグメントが見つからない場合は元のマスクを返す
 
 
 def process_slice_sequence_v2(

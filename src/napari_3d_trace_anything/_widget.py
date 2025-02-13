@@ -23,7 +23,6 @@ from ._utils import (
     SAMSegmenter,
 )
 from .processing.process_slice_sequence_v2 import optimize_segmentation
-from .processing import process_slice_sequence_v2
 
 
 class TraceAnything(QWidget):
@@ -317,6 +316,7 @@ class TraceAnything(QWidget):
 
     def _predict(self, image, i, labels_layer_name, prev_slice):
         preprocessed_image = preprocess(image, self._image_type, i)
+        height, width = preprocessed_image.shape[:2]
         boxes = [x for x in self._sam_box_layer.data if x[0][0] == i]
         if len(boxes) == 0:
             labels = label(
@@ -324,19 +324,89 @@ class TraceAnything(QWidget):
                 )
             margin_ratio = self._margin_ratio.value()
             boxes = create_boxes_list(labels, margin_ratio=margin_ratio)
+
         for coords in boxes:
             if self.sam_segmenter is not None:
-                if self._self_optimization.isChecked():
-                    # optimize_segmentationを使用
-                    _, mask = process_slice_sequence_v2.optimize_segmentation(
-                        preprocessed_image,
-                        coords,
-                        self.sam_segmenter,
-                        self._margin_ratio.value()
-                    )
+                # クロップが必要かどうかを判断
+                should_crop = width > 1024 or height > 1024
+
+                if should_crop:
+                    # ボックスの座標を取得 (y, x)
+                    # coordsは[z, y, x]形式
+                    x_coords = [c[2] for c in coords]  # x座標を取得
+                    y_coords = [c[1] for c in coords]  # y座標を取得
+                    
+                    # バウンディングボックスの座標を計算
+                    x1_box = min(x_coords)
+                    x2_box = max(x_coords)
+                    y1_box = min(y_coords)
+                    y2_box = max(y_coords)
+
+                    print(f"box (x, y): ({x1_box}, {y1_box}) - ({x2_box}, {y2_box})")
+                    
+                    # ボックスの中心座標を計算
+                    center_x = int((x1_box + x2_box) / 2)
+                    center_y = int((y1_box + y2_box) / 2)
+
+                    # クロップ範囲を計算（1024x1024を確保）
+                    half_size = 512
+                    x1 = max(0, min(width - 1024, center_x - half_size))
+                    y1 = max(0, min(height - 1024, center_y - half_size))
+                    x2 = x1 + 1024
+                    y2 = y1 + 1024
+
+                    # 画像の端に到達した場合の調整
+                    if x2 > width:
+                        x2 = width
+                        x1 = max(0, x2 - 1024)
+                    if y2 > height:
+                        y2 = height
+                        y1 = max(0, y2 - 1024)
+
+                    print(f"crop (x, y): ({x1}, {y1}) - ({x2}, {y2})")
+
+                    # クロップされた画像を作成
+                    cropped_image = preprocessed_image[y1:y2, x1:x2]
+
+                    # ボックス座標をクロップ後の座標系に変換
+                    cropped_coords = [
+                        x1_box - x1,  # x1
+                        y1_box - y1,  # y1
+                        x2_box - x1,   # x2
+                        y2_box - y1  # y2
+                    ]
+
+                    print(f"coords after crop (x, y): {cropped_coords}")
+
+                    if self._self_optimization.isChecked():
+                        # optimize_segmentationを使用
+                        _, cropped_mask = optimize_segmentation(
+                            cropped_image,
+                            cropped_coords,
+                            self.sam_segmenter,
+                            self._margin_ratio.value()
+                        )
+                    else:
+                        cropped_mask = self.sam_segmenter.segment(
+                            cropped_image, cropped_coords)
+
+                    # マスクをオリジナルサイズに戻す
+                    mask = np.zeros((height, width), dtype=bool)
+                    mask[y1:y2, x1:x2] = cropped_mask
+
                 else:
-                    mask = self.sam_segmenter.segment(
-                        preprocessed_image, coords)
+                    if self._self_optimization.isChecked():
+                        # optimize_segmentationを使用
+                        _, mask = optimize_segmentation(
+                            preprocessed_image,
+                            coords,
+                            self.sam_segmenter,
+                            self._margin_ratio.value()
+                        )
+                    else:
+                        mask = self.sam_segmenter.segment(
+                            preprocessed_image, coords)
+
                 viewer_layer = self._viewer.layers[labels_layer_name]
                 layer_data = viewer_layer.data
                 layer_data[i] = layer_data[i] + mask * 1

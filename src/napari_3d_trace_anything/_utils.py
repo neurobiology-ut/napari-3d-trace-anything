@@ -61,7 +61,8 @@ class SAMSegmenter:
 
         # マスクの生成
         masks, _, _ = self.predictor.predict(
-            box=input_box[None, :], multimask_output=False
+            box=input_box[None, :],
+            multimask_output=False
         )
 
         return masks[0]
@@ -101,7 +102,7 @@ def create_box(props, mergin_ratio=0.0):
     # return [minc, minr, maxc, maxr]  # x1, y1, x2, y2の順序
 
 
-def create_boxes_list(labels, mergin_ratio=0.0):
+def create_boxes_list(labels, margin_ratio=0.0):
     """ラベル画像から複数のバウンディングボックスを作成
 
     Args:
@@ -115,7 +116,7 @@ def create_boxes_list(labels, mergin_ratio=0.0):
     boxes = []
     for props in regionprops(labels):
         # create_boxを使用してバウンディングボックスを取得
-        box_coords = create_box(props, mergin_ratio)
+        box_coords = create_box(props, margin_ratio)
         # 座標形式を変換
         box = np.array([
             [0, box_coords[1], box_coords[0]],  # [z, y1, x1]
