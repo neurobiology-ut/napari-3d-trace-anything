@@ -214,7 +214,7 @@ def autodownload(model_url):
 
 
 def preprocess(image, image_type, slice_index):
-    """画像の前処理を行う（スタブ実装）
+    """画像の前処理を行う
 
     Args:
         image (np.ndarray): 入力画像
