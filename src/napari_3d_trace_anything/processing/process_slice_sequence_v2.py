@@ -27,8 +27,10 @@ def optimize_segmentation(
             - optimized_box: 最適化されたバウンディングボックス
             - optimized_mask: 最適化されたマスク
     """
-    # 最初のセグメンテーション
-    current_mask = segmenter.segment(image_slice, initial_box)
+    # 最初のセグメンテーションをしてそれは維持しておく
+    initial_mask = segmenter.segment(image_slice, initial_box)
+    current_mask = initial_mask
+
     current_box = initial_box
     
     iteration = 1
@@ -84,9 +86,17 @@ def optimize_segmentation(
         max_area_props = max(props_list, key=lambda p: p.area)
         final_mask = np.zeros_like(current_mask)
         final_mask[label_image == max_area_props.label] = 1
+
+        # final_maskとinitial_maskのIoUを計算
+        # IoUが0.2を下回る場合は元のマスクを返す
+        iou_score = calculate_iou(final_mask, initial_mask)
+        print(f"    最終マスクと初期マスクのIoU: {iou_score:.4f}")
+        if iou_score < 0.2:
+            print("    IoUが0.2を下回るため、初期のマスクを返します")
+            return initial_box, initial_mask
         return current_box, final_mask
     
-    return current_box, current_mask  # セグメントが見つからない場合は元のマスクを返す
+    return initial_box, initial_mask  # セグメントが見つからない場合は元のマスクを返す
 
 
 def process_slice_sequence_v2(
