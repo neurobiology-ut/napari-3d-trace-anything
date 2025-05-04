@@ -11,6 +11,8 @@ from qtpy.QtWidgets import (
     QSpinBox,
     QDoubleSpinBox,
     QCheckBox,
+    QMessageBox,
+    QLineEdit,
 )
 from segment_anything import sam_model_registry, SamPredictor
 from skimage.measure import label
@@ -88,6 +90,11 @@ class TraceAnything(QWidget):
         self.vbox.addWidget(QLabel("self-optimization"))
         self._self_optimization = QCheckBox()
         self.vbox.addWidget(self._self_optimization)
+
+        # instance mode のチェックボックスを追加
+        self.vbox.addWidget(QLabel("instance mode"))
+        self._instance_mode = QCheckBox()
+        self.vbox.addWidget(self._instance_mode)
         
         self._trace_btn = QPushButton("trace")
         self._trace_btn.clicked.connect(self._trace)
@@ -107,13 +114,20 @@ class TraceAnything(QWidget):
         )
         self.vbox.addWidget(self._merged_labels_layer_selection)
 
+        self.initVariables()
+
         self._sam_box_layer = self._viewer.add_shapes(
             name="SAM-Box",
             edge_color="red",
             edge_width=2,
             face_color="transparent",
             ndim=3,
+            features=self.features,
+            text=self.text
         )
+        self._sam_boxes = self._sam_box_layer.data
+        # TODO: boxができた時だけに機能するようにする(data.connectだとクリックしたときにもう反応してしまう)
+        self._sam_box_layer.events.data.connect(self.popup)
         self.lock_controls(self._sam_box_layer)
 
         if self._image_layer_selection.currentText() != "":
@@ -191,6 +205,37 @@ class TraceAnything(QWidget):
         self._viewer.bind_key("A", self._accept_prediction)
 
         self._on_layer_list_changed(None)
+
+    def initVariables(self):
+        """Initializes the variables."""
+        self.features = {"class": []}
+        self.text = {
+            "string": "{class}",
+            "anchor": "upper_left",
+            "translation": [0, 0],
+            "size": 10,
+            "color": "green",
+        }
+
+    def popup(self):
+        """Popup for SAM-Box layer"""
+        print(self._sam_box_layer.mode)
+        if self._sam_box_layer.mode == "add_rectangle":
+            if self._instance_mode:
+                popup = QMessageBox(self)
+                popup.setWindowTitle("Numbering")
+                line_edit = QLineEdit(popup)
+                line_edit.setPlaceholderText("Enter instance number")
+                popup.layout().addWidget(line_edit)
+                if popup.exec_() == QMessageBox.Accepted:
+                    instance_number = line_edit.text()
+                    if instance_number.isdigit():
+                        # self.features["class"].append(instance_number)
+                        print(self.features)
+                        print(self.layer.data)
+                        self.features.loc[-1, "class"] = instance_number
+                    else:
+                        QMessageBox.warning(self, "Invalid Input", "Please enter a valid number.")
 
     def _clear_current_label(self, event):
         self._current_slice, _, _ = self._viewer.dims.current_step
