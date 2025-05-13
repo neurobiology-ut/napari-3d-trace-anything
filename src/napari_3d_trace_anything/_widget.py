@@ -15,7 +15,6 @@ from qtpy.QtWidgets import (
     QLineEdit,
 )
 from segment_anything import sam_model_registry, SamPredictor
-from skimage.measure import label
 from tqdm import tqdm
 from ._utils import (
     check_image_type,
@@ -125,9 +124,12 @@ class TraceAnything(QWidget):
             features=self.features,
             text=self.text
         )
+        self._sam_box_layer.features = self._sam_box_layer.features.astype(
+            {"class": int}
+        )
+        self._sam_box_layer.feature_defaults["class"] = 1
         self._sam_boxes = self._sam_box_layer.data
-        # TODO: boxができた時だけに機能するようにする(data.connectだとクリックしたときにもう反応してしまう)
-        self._sam_box_layer.events.data.connect(self.popup)
+        self._sam_box_layer.mouse_drag_callbacks.append(self.popup)
         self.lock_controls(self._sam_box_layer)
 
         if self._image_layer_selection.currentText() != "":
@@ -212,13 +214,19 @@ class TraceAnything(QWidget):
         self.text = {
             "string": "{class}",
             "anchor": "upper_left",
-            "translation": [0, 0],
-            "size": 10,
+            "translation": [0, 0, 0],
+            "size": 12,
             "color": "green",
         }
 
-    def popup(self):
+    def popup(self, layer, event):
         """Popup for SAM-Box layer"""
+        # mouse click
+        yield
+        # mouse move
+        while event.type == 'mouse_move':
+            yield
+        # mouse release:
         print(self._sam_box_layer.mode)
         if self._sam_box_layer.mode == "add_rectangle":
             if self._instance_mode:
@@ -227,15 +235,19 @@ class TraceAnything(QWidget):
                 line_edit = QLineEdit(popup)
                 line_edit.setPlaceholderText("Enter instance number")
                 popup.layout().addWidget(line_edit)
-                if popup.exec_() == QMessageBox.Accepted:
+                if popup.exec_() == QMessageBox.Ok:
                     instance_number = line_edit.text()
                     if instance_number.isdigit():
-                        # self.features["class"].append(instance_number)
-                        print(self.features)
-                        print(self.layer.data)
-                        self.features.loc[-1, "class"] = instance_number
+                        layer.features.loc[
+                            len(layer.features) - 1, "class"
+                        ] = instance_number
+                        layer.refresh_text(
+                        )
                     else:
-                        QMessageBox.warning(self, "Invalid Input", "Please enter a valid number.")
+                        QMessageBox.warning(
+                            self, "Invalid Input",
+                            "Please enter a valid number."
+                        )
 
     def _clear_current_label(self, event):
         self._current_slice, _, _ = self._viewer.dims.current_step
@@ -359,18 +371,21 @@ class TraceAnything(QWidget):
                 if stop_predicting:
                     break
 
-    def _predict(self, image, i, labels_layer_name, prev_slice):
-        preprocessed_image = preprocess(image, self._image_type, i)
+    def _predict(self, image, slice_index, labels_layer_name, prev_slice_index):
+        preprocessed_image = preprocess(image, self._image_type, slice_index)
         height, width = preprocessed_image.shape[:2]
-        boxes = [x for x in self._sam_box_layer.data if x[0][0] == i]
+        # boxとfeaturesのclassを取得
+        boxes = [x for x in self._sam_box_layer.data if x[0][0] == slice_index]
+        label_values = list(self._sam_box_layer.features["class"])
+        # boxesとfeaturesを辞書化する
+        # boxごとに処理してマスクの値はfeatureの値にする
+        # TODO: このままだとboxがついていないものは続かない。また、上書きするかどうかの判断もいる。つまりboxがあればその場所はboxを推論する。さらに次のスライスにおいて、boxから始まった場合は上書きをするがそうでない場合は上書きをしない。ただし、そのラベルがあれば、である。
         if len(boxes) == 0:
-            labels = label(
-                self._viewer.layers[labels_layer_name].data[prev_slice] > 0
-                )
+            labels = self._viewer.layers[labels_layer_name].data[prev_slice_index]
             margin_ratio = self._margin_ratio.value()
-            boxes = create_boxes_list(labels, margin_ratio=margin_ratio)
+            boxes, label_values = create_boxes_list(labels, margin_ratio=margin_ratio)
 
-        for coords in boxes:
+        for coords, label_value in zip(boxes, label_values):
             if self.sam_segmenter is not None:
                 # クロップが必要かどうかを判断
                 should_crop = width > 1024 or height > 1024
@@ -378,6 +393,7 @@ class TraceAnything(QWidget):
                 if should_crop:
                     # ボックスの座標を取得 (y, x)
                     # coordsは[z, y, x]形式
+                    # TODO: CROP画像を保持しておいて、再度cropする必要をなくす
                     x_coords = [c[2] for c in coords]  # x座標を取得
                     y_coords = [c[1] for c in coords]  # y座標を取得
                     
@@ -454,7 +470,8 @@ class TraceAnything(QWidget):
 
                 viewer_layer = self._viewer.layers[labels_layer_name]
                 layer_data = viewer_layer.data
-                layer_data[i] = layer_data[i] + mask * 1
+                current_slice = layer_data[slice_index]
+                layer_data[slice_index] = np.where(mask, label_value, current_slice)
                 viewer_layer.data = layer_data
                 self._viewer.layers[labels_layer_name].refresh()
             else:

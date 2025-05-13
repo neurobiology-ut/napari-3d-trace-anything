@@ -4,7 +4,7 @@ import urllib
 import numpy as np
 from segment_anything import sam_model_registry, SamPredictor
 from skimage.color import gray2rgb
-from skimage.measure import regionprops
+from skimage.measure import regionprops, label
 
 
 class SAMSegmenter:
@@ -106,26 +106,45 @@ def create_boxes_list(labels, margin_ratio=0.0):
     """ラベル画像から複数のバウンディングボックスを作成
 
     Args:
-        labels: ラベル付けされた画像
-        mergin_ratio (float): バウンディングボックスのマージン比率
+        labels: ラベル付けされた画像。同じラベル値を持つ複数のblobが存在する場合、
+               それぞれのblobに対して個別のバウンディングボックスが生成されます。
+        margin_ratio (float): バウンディングボックスのマージン比率
 
     Returns:
-        list: [[z, y1, x1], [z, y1, x2], [z, y2, x2], [z, y2, x1]]
-            形式のバウンディングボックスのリスト
+        tuple: (boxes, label_values)
+            boxes: [[z, y1, x1], [z, y1, x2], [z, y2, x2], [z, y2, x1]]
+                形式のバウンディングボックスのリスト。各要素はnp.array
+            label_values: 各バウンディングボックスに対応する元のラベル値のリスト
     """
     boxes = []
-    for props in regionprops(labels):
-        # create_boxを使用してバウンディングボックスを取得
-        box_coords = create_box(props, margin_ratio)
-        # 座標形式を変換
-        box = np.array([
-            [0, box_coords[1], box_coords[0]],  # [z, y1, x1]
-            [0, box_coords[1], box_coords[2]],  # [z, y1, x2]
-            [0, box_coords[3], box_coords[2]],  # [z, y2, x2]
-            [0, box_coords[3], box_coords[0]],  # [z, y2, x1]
-        ])
-        boxes.append(box)
-    return boxes
+    label_values = []
+    
+    # ユニークなラベル値を取得（0は背景として除外）
+    unique_labels = np.unique(labels)
+    unique_labels = unique_labels[unique_labels != 0]
+    
+    # 各ラベル値について処理
+    for label_val in unique_labels:
+        # 現在のラベル値のマスクを作成
+        binary_mask = (labels == label_val)
+        # 各blobを個別にラベリング
+        components, num_components = label(binary_mask, return_num=True)
+        
+        # 各blobに対してバウンディングボックスを生成
+        for props in regionprops(components):
+            # create_boxを使用してバウンディングボックスを取得
+            box_coords = create_box(props, margin_ratio)
+            # 座標形式を変換
+            box = np.array([
+                [0, box_coords[1], box_coords[0]],  # [z, y1, x1]
+                [0, box_coords[1], box_coords[2]],  # [z, y1, x2]
+                [0, box_coords[3], box_coords[2]],  # [z, y2, x2]
+                [0, box_coords[3], box_coords[0]],  # [z, y2, x1]
+            ])
+            boxes.append(box)
+            label_values.append(label_val)
+    
+    return boxes, label_values
 
 
 def segment_with_sam(predictor, image, box):
