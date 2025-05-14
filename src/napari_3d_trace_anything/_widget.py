@@ -377,13 +377,13 @@ class TraceAnything(QWidget):
         # boxとfeaturesのclassを取得
         boxes = [x for x in self._sam_box_layer.data if x[0][0] == slice_index]
         label_values = list(self._sam_box_layer.features["class"])
-        # boxesとfeaturesを辞書化する
-        # boxごとに処理してマスクの値はfeatureの値にする
         # TODO: このままだとboxがついていないものは続かない。また、上書きするかどうかの判断もいる。つまりboxがあればその場所はboxを推論する。さらに次のスライスにおいて、boxから始まった場合は上書きをするがそうでない場合は上書きをしない。ただし、そのラベルがあれば、である。
         if len(boxes) == 0:
             labels = self._viewer.layers[labels_layer_name].data[prev_slice_index]
             margin_ratio = self._margin_ratio.value()
             boxes, label_values = create_boxes_list(labels, margin_ratio=margin_ratio)
+
+        cropped_image = None
 
         for coords, label_value in zip(boxes, label_values):
             if self.sam_segmenter is not None:
@@ -393,7 +393,6 @@ class TraceAnything(QWidget):
                 if should_crop:
                     # ボックスの座標を取得 (y, x)
                     # coordsは[z, y, x]形式
-                    # TODO: CROP画像を保持しておいて、再度cropする必要をなくす
                     x_coords = [c[2] for c in coords]  # x座標を取得
                     y_coords = [c[1] for c in coords]  # y座標を取得
                     
@@ -404,30 +403,44 @@ class TraceAnything(QWidget):
                     y2_box = max(y_coords)
 
                     print(f"box (x, y): ({x1_box}, {y1_box}) - ({x2_box}, {y2_box})")
+
+                    x_margin = x2_box - x1_box
+                    y_margin = y2_box - y1_box
                     
-                    # ボックスの中心座標を計算
-                    center_x = int((x1_box + x2_box) / 2)
-                    center_y = int((y1_box + y2_box) / 2)
+                    if cropped_image is not None:
+                        x1_shrinked = x1 + x_margin
+                        y1_shrinked = y1 + y_margin
+                        x2_shrinked = x2 - x_margin
+                        y2_shrinked = y2 - y_margin
+                        if x1_box > x1_shrinked and x2_box < x2_shrinked and y1_box > y1_shrinked and y2_box < y2_shrinked:
+                            print("box is inside the cropped image")
+                        else:
+                            cropped_image = None
 
-                    # クロップ範囲を計算（1024x1024を確保）
-                    half_size = 512
-                    x1 = max(0, min(width - 1024, center_x - half_size))
-                    y1 = max(0, min(height - 1024, center_y - half_size))
-                    x2 = x1 + 1024
-                    y2 = y1 + 1024
+                    if cropped_image is None:
+                        # ボックスの中心座標を計算
+                        center_x = int((x1_box + x2_box) / 2)
+                        center_y = int((y1_box + y2_box) / 2)
 
-                    # 画像の端に到達した場合の調整
-                    if x2 > width:
-                        x2 = width
-                        x1 = max(0, x2 - 1024)
-                    if y2 > height:
-                        y2 = height
-                        y1 = max(0, y2 - 1024)
+                        # クロップ範囲を計算（1024x1024を確保）
+                        half_size = 512
+                        x1 = max(0, min(width - 1024, center_x - half_size))
+                        y1 = max(0, min(height - 1024, center_y - half_size))
+                        x2 = x1 + 1024
+                        y2 = y1 + 1024
 
-                    print(f"crop (x, y): ({x1}, {y1}) - ({x2}, {y2})")
+                        # 画像の端に到達した場合の調整
+                        if x2 > width:
+                            x2 = width
+                            x1 = max(0, x2 - 1024)
+                        if y2 > height:
+                            y2 = height
+                            y1 = max(0, y2 - 1024)
 
-                    # クロップされた画像を作成
-                    cropped_image = preprocessed_image[y1:y2, x1:x2]
+                        print(f"crop (x, y): ({x1}, {y1}) - ({x2}, {y2})")
+
+                        # クロップされた画像を作成
+                        cropped_image = preprocessed_image[y1:y2, x1:x2]
 
                     # ボックス座標をクロップ後の座標系に変換
                     cropped_coords = [
