@@ -218,6 +218,7 @@ class TraceAnything(QWidget):
             "size": 12,
             "color": "green",
         }
+        self._update_values = []
 
     def popup(self, layer, event):
         """Popup for SAM-Box layer"""
@@ -344,6 +345,8 @@ class TraceAnything(QWidget):
 
     def _tracer(self):
         print("start tracing")
+        # 更新対象の初期化
+        self._update_values = []
         image = self._viewer.layers[
             self._image_layer_selection.currentText()
         ].data
@@ -372,17 +375,49 @@ class TraceAnything(QWidget):
                     break
 
     def _predict(self, image, slice_index, labels_layer_name, prev_slice_index):
+        print("start predict on slice: ", slice_index)
+        print(f"update values: {self._update_values}")
+
         preprocessed_image = preprocess(image, self._image_type, slice_index)
         height, width = preprocessed_image.shape[:2]
         # boxとfeaturesのclassを取得
-        boxes = [x for x in self._sam_box_layer.data if x[0][0] == slice_index]
-        label_values = list(self._sam_box_layer.features["class"])
-        # TODO: このままだとboxがついていないものは続かない。また、上書きするかどうかの判断もいる。つまりboxがあればその場所はboxを推論する。さらに次のスライスにおいて、boxから始まった場合は上書きをするがそうでない場合は上書きをしない。ただし、そのラベルがあれば、である。
-        if len(boxes) == 0:
-            labels = self._viewer.layers[labels_layer_name].data[prev_slice_index]
-            margin_ratio = self._margin_ratio.value()
-            boxes, label_values = create_boxes_list(labels, margin_ratio=margin_ratio)
-
+        boxes = []
+        label_values = []
+        for x, label_value in zip(
+            self._sam_box_layer.data, 
+            list(self._sam_box_layer.features["class"])
+        ):
+            if x[0][0] == slice_index:
+                # slice_indexにあるboxだけを取得
+                boxes.append(x)
+                label_value = int(label_value)
+                label_values.append(label_value)
+                if label_value not in self._update_values:
+                    # そのラベル値が更新対象になっていない場合は追加する
+                    self._update_values.append(label_value)
+        # 前のスライスのラベルを取得
+        labels = self._viewer.layers[labels_layer_name].data[prev_slice_index]
+        # 現在のスライスのラベルを取得
+        current_labels = self._viewer.layers[labels_layer_name].data[slice_index]
+        # 現在のスライスのラベルのユニークな値を取得
+        current_labels_values = np.unique(current_labels)
+        margin_ratio = self._margin_ratio.value()
+        # 前のスライスのラベルをもとにboxを生成
+        boxes_created, label_values_created = create_boxes_list(labels, margin_ratio=margin_ratio)
+        for box, label_value in zip(boxes_created, label_values_created):
+            if (
+                label_value not in current_labels_values
+                and label_value not in label_values
+            ):
+                # 現在のスライスにラベルがなく、かつboxもつけられていないラベルだけを追加
+                boxes.append(box)
+                label_values.append(label_value)
+            else:
+                if (label_value in self._update_values
+                    and label_value not in label_values):
+                    # 更新対象のラベル値のboxがつけられていない場合は現在のスライスにラベルがあっても追加
+                    boxes.append(box)
+                    label_values.append(label_value) 
         cropped_image = None
 
         for coords, label_value in zip(boxes, label_values):
@@ -483,8 +518,25 @@ class TraceAnything(QWidget):
 
                 viewer_layer = self._viewer.layers[labels_layer_name]
                 layer_data = viewer_layer.data
-                current_slice = layer_data[slice_index]
-                layer_data[slice_index] = np.where(mask, label_value, current_slice)
+                
+                # データ型とユニークな値を確認
+                current_data = layer_data[slice_index].copy().astype(np.int32)
+                print(f"Before processing - unique values: {np.unique(current_data)}")
+                print(f"Processing label_value: {label_value}")
+                print(f"Label value type: {type(label_value)}, value: {label_value}")
+                
+                # まずlabel_valueのpixelの値を0にする
+                label_mask = (current_data == int(label_value))
+                print(f"Number of pixels with label_value: {np.sum(label_mask)}")
+                current_data[label_mask] = 0
+                print(f"After zeroing - unique values: {np.unique(current_data)}")
+                
+                # maskを適用
+                current_data[mask] = int(label_value)
+                print(f"After applying mask - unique values: {np.unique(current_data)}")
+                
+                # 結果を書き戻す
+                layer_data[slice_index] = current_data
                 viewer_layer.data = layer_data
                 self._viewer.layers[labels_layer_name].refresh()
             else:
