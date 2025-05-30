@@ -1,3 +1,50 @@
+[project]
+name = "napari-3d-trace-anything"
+version = "0.0.1"
+description = "3D tracer using Segment Anything Model"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [
+    { name = "Hiroki Kawai", email = "h.kawai888@gmail.com" }
+]
+keywords = ["napari", "3D", "tracing", "image processing"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Framework :: napari",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Topic :: Scientific/Engineering :: Image Processing"
+]
+dependencies = [
+    "numpy",
+    "magicgui",
+    "qtpy",
+    "napari[all]>=0.4.19.post1",
+    "segment-anything==1.0",
+    "scikit-image>=0.21.0",
+    "torch>=2.5.1",
+    "tqdm>=4.67.1",
+    "torchvision>=0.20.1",
+]
+requires-python = ">=3.8"
+
+[project.optional-dependencies]
+testing = [
+    "tox",
+    "pytest",
+    "pytest-cov",
+    "pytest-qt",
+    "napari",
+    "pyqt5"
+]
+
 [build-system]
 requires = ["setuptools>=42.0.0", "wheel"]
 build-backend = "setuptools.build_meta"

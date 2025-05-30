@@ -89,7 +89,7 @@ class TraceAnything(QWidget):
             self.device = 'cpu'
 
         self._sam_model = None
-        self.sam_predictor = None
+        self.sam_predictor_cache = {}
 
         self._viewer.layers.events.inserted.connect(self._on_layer_list_changed)
         self._viewer.layers.events.removed.connect(self._on_layer_list_changed)
@@ -125,7 +125,6 @@ class TraceAnything(QWidget):
         model_name = self._model_selection.currentText()
         self._sam_model = load_model(model_name)
         self._sam_model.to(device=self.device)
-        self.sam_predictor = SamPredictor(self._sam_model)
         print("model loaded")
 
     def _on_image_layer_changed(self, index):
@@ -178,8 +177,14 @@ class TraceAnything(QWidget):
                 if stop_predicting:
                     break
 
+    def _ensure_predictor(self, i, image):
+        if i not in self.sam_predictor_cache:
+            self.sam_predictor_cache[i] = SamPredictor(self._sam_model)
+            self.sam_predictor_cache[i].set_image(preprocess(image, self._image_type, i))
+        return self.sam_predictor_cache[i]
+
     def _predict(self, image, i, labels_layer_name, prev_slice):
-        self.sam_predictor.set_image(preprocess(image, self._image_type, i))
+        sam_predictor = self._ensure_predictor(i, image)
         boxes = [x for x in self._sam_box_layer.data if x[0][0] == i]
         if len(boxes) == 0:
             boxes = create_box(self._viewer.layers[labels_layer_name].data[prev_slice])
@@ -190,8 +195,8 @@ class TraceAnything(QWidget):
             x2 = int(coords[2][2])
             print(x1, y1, x2, y2)
             input_box = np.array([x1, y1, x2, y2])
-            if self.sam_predictor is not None:
-                masks, _, _ = self.sam_predictor.predict(
+            if sam_predictor is not None:
+                masks, _, _ = sam_predictor.predict(
                     point_coords=None,
                     point_labels=None,
                     box=input_box[None, :],
