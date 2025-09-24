@@ -69,6 +69,7 @@ target/
 # Pycharm and VSCode
 .idea/
 venv/
+.venv/
 .vscode/
 
 # IPython Notebook
@@ -79,6 +80,7 @@ venv/
 
 # OS
 .DS_Store
+*~
 
 # written by setuptools_scm
 **/_version.py
