@@ -225,7 +225,7 @@ def preprocess(image, image_type, slice_index):
     """画像の前処理を行う
 
     Args:
-        image (np.ndarray): 入力画像
+        image (np.ndarray or dask.array): 入力画像
         image_type (str): 画像タイプ
         slice_index (int): スライスインデックス
 
@@ -233,7 +233,15 @@ def preprocess(image, image_type, slice_index):
         np.ndarray: 前処理された画像
     """
     if "stack" in image_type:
-        return image[slice_index]
+        slice_data = image[slice_index]
+        # dask配列の場合、実際のNumPy配列に変換
+        if hasattr(slice_data, 'compute'):
+            return slice_data.compute()
+        return slice_data
+    
+    # スタックでない場合も同様にチェック
+    if hasattr(image, 'compute'):
+        return image.compute()
     return image
 
 
