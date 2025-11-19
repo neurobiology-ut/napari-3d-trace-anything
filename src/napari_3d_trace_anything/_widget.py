@@ -501,21 +501,21 @@ class TraceAnything(QWidget):
             if range_str:
                 try:
                     target_slices = parse_slice_range(range_str)
-                    print(f"指定されたスライス範囲: {target_slices}")
+                    print(f"Specified slice range: {target_slices}")
                     
                     # スライス番号の検証
                     max_slice = input_layer.data.shape[0] - 1
                     invalid_slices = [s for s in target_slices if s < 0 or s > max_slice]
                     if invalid_slices:
-                        print(f"エラー: 無効なスライス番号が含まれています: {invalid_slices}")
-                        print(f"有効範囲: 0-{max_slice}")
+                        print(f"Error: Invalid slice numbers found: {invalid_slices}")
+                        print(f"Valid range: 0-{max_slice}")
                         return
                         
                 except ValueError as e:
-                    print(f"エラー: 範囲指定の解析に失敗しました: {e}")
+                    print(f"Error: Failed to parse range specification: {e}")
                     return
             else:
-                print("範囲指定が空のため、全スライスを対象とします")
+                print("No range specified, targeting all slices")
             
             if isinstance(input_layer, napari.layers.labels.labels.Labels):
                 max_output_layer_label = np.max(output_layer.data).astype(
@@ -536,14 +536,14 @@ class TraceAnything(QWidget):
                                 output_layer.data[slice_idx] += mask.astype(np.uint16) * (max_output_layer_label + 1)
                                 max_output_layer_label += 1  # 次のラベル番号を更新
                     
-                    print(f"完了: {len(target_slices)}個のスライス ({target_slices}) にラベルを転送しました")
+                    print(f"Completed: Transferred labels to {len(target_slices)} slices ({target_slices})")
                 else:
                     # 全スライスを処理（従来の動作）
                     output_layer.data += (
                         (input_layer.data == 1).astype(np.uint8)
                         * (output_layer.data == 0).astype(np.uint8)
                     ).astype(np.uint16) * (max_output_layer_label + 1)
-                    print("完了: 全スライスにラベルを転送しました")
+                    print("Completed: Transferred labels to all slices")
                 
                 # 予測ラベルレイヤーをクリア
                 self._predict_label_layer.data = np.zeros_like(
