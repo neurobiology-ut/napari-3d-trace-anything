@@ -111,20 +111,28 @@ def create_boxes_list(labels, margin_ratio=0.0):
 
     Returns:
         list: [[z, y1, x1], [z, y1, x2], [z, y2, x2], [z, y2, x1]]
-            形式のバウンディングボックスのリスト
+            形式のバウンディングボックスのリスト（最大面積のオブジェクトのみ）
     """
     boxes = []
-    for props in regionprops(labels):
-        # create_boxを使用してバウンディングボックスを取得
-        box_coords = create_box(props, margin_ratio)
-        # 座標形式を変換
-        box = np.array([
-            [0, box_coords[1], box_coords[0]],  # [z, y1, x1]
-            [0, box_coords[1], box_coords[2]],  # [z, y1, x2]
-            [0, box_coords[3], box_coords[2]],  # [z, y2, x2]
-            [0, box_coords[3], box_coords[0]],  # [z, y2, x1]
-        ])
-        boxes.append(box)
+    props_list = list(regionprops(labels))
+    
+    if not props_list:
+        return boxes
+    
+    # 最大面積のオブジェクトのみを取得
+    max_props = max(props_list, key=lambda p: p.area)
+    
+    # create_boxを使用してバウンディングボックスを取得
+    box_coords = create_box(max_props, margin_ratio)
+    # 座標形式を変換
+    box = np.array([
+        [0, box_coords[1], box_coords[0]],  # [z, y1, x1]
+        [0, box_coords[1], box_coords[2]],  # [z, y1, x2]
+        [0, box_coords[3], box_coords[2]],  # [z, y2, x2]
+        [0, box_coords[3], box_coords[0]],  # [z, y2, x1]
+    ])
+    boxes.append(box)
+    
     return boxes
 
 

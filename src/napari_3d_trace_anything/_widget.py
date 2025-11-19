@@ -4,6 +4,7 @@ import torch
 from napari._qt.qthreading import create_worker
 from qtpy.QtWidgets import (
     QVBoxLayout,
+    QHBoxLayout,
     QPushButton,
     QWidget,
     QComboBox,
@@ -15,6 +16,7 @@ from qtpy.QtWidgets import (
 )
 from segment_anything import sam_model_registry, SamPredictor
 from skimage.measure import label
+from skimage.morphology import remove_small_holes, remove_small_objects
 from tqdm import tqdm
 from ._utils import (
     check_image_type,
@@ -45,7 +47,7 @@ class TraceAnything(QWidget):
         self._model_load_btn = QPushButton("load model")
         self._model_load_btn.clicked.connect(self._load_model)
         self.vbox.addWidget(self._model_load_btn)
-        self.vbox.addWidget(QLabel("input image layer"))
+        self.vbox.addWidget(QLabel("Image Layer"))
         self._image_layer_selection = QComboBox()
         self._image_layer_selection.addItems(
             [
@@ -58,7 +60,7 @@ class TraceAnything(QWidget):
             self._on_image_layer_changed
         )
         self.vbox.addWidget(self._image_layer_selection)
-        self.vbox.addWidget(QLabel("output labels layer"))
+        self.vbox.addWidget(QLabel("Labels Layer"))
         self._labels_layer_selection = QComboBox()
         self._labels_layer_selection.addItems(
             [
@@ -68,34 +70,54 @@ class TraceAnything(QWidget):
             ]
         )
         self.vbox.addWidget(self._labels_layer_selection)
-        self.vbox.addWidget(QLabel("start slice"))
+        self.vbox.addWidget(QLabel("Slice Range"))
+        slice_hbox = QHBoxLayout()
         self._start_slice = QSpinBox(
             minimum=self._minimum_slice, maximum=self._maximum_slice, value=0
         )
-        self.vbox.addWidget(self._start_slice)
-        self.vbox.addWidget(QLabel("end slice"))
         self._end_slice = QSpinBox(
             minimum=self._minimum_slice, maximum=self._maximum_slice, value=0
         )
-        self.vbox.addWidget(self._end_slice)
-        # add margin ratio input (optional)
-        self.vbox.addWidget(QLabel("margin ratio (optional)"))
+        slice_hbox.addWidget(self._start_slice)
+        slice_hbox.addWidget(self._end_slice)
+        self.vbox.addLayout(slice_hbox)
+        self.vbox.addWidget(QLabel("Margin Ratio"))
         self._margin_ratio = QDoubleSpinBox()
         self._margin_ratio.setRange(-1.0, 1.0)
         self._margin_ratio.setValue(0.0)
         self._margin_ratio.setSingleStep(0.1)
         self.vbox.addWidget(self._margin_ratio)
         
-        # self-optimizationのチェックボックスを追加
-        self.vbox.addWidget(QLabel("self-optimization"))
+        self.vbox.addWidget(QLabel("Self-Optimization"))
         self._self_optimization = QCheckBox()
         self.vbox.addWidget(self._self_optimization)
         
-        self._trace_btn = QPushButton("trace")
+        morphology_hbox = QHBoxLayout()
+        morphology_left = QVBoxLayout()
+        morphology_left.addWidget(QLabel("Fill Holes"))
+        self._hole_area_threshold = QSpinBox()
+        self._hole_area_threshold.setRange(0, 1000)
+        self._hole_area_threshold.setValue(5)
+        self._hole_area_threshold.setToolTip("指定ピクセル以下の穴を埋めます (0で無効)")
+        morphology_left.addWidget(self._hole_area_threshold)
+        
+        morphology_right = QVBoxLayout()
+        morphology_right.addWidget(QLabel("Remove Obj"))
+        self._min_object_size = QSpinBox()
+        self._min_object_size.setRange(0, 1000)
+        self._min_object_size.setValue(10)
+        self._min_object_size.setToolTip("指定ピクセル以下のオブジェクトを除去します (0で無効)")
+        morphology_right.addWidget(self._min_object_size)
+        
+        morphology_hbox.addLayout(morphology_left)
+        morphology_hbox.addLayout(morphology_right)
+        self.vbox.addLayout(morphology_hbox)
+        
+        self._trace_btn = QPushButton("Trace")
         self._trace_btn.clicked.connect(self._trace)
         self.vbox.addWidget(self._trace_btn)
-        # add predict-merge layer selection
-        self.vbox.addWidget(QLabel("merged labels layer"))
+        
+        self.vbox.addWidget(QLabel("Merged Layer"))
         self._merged_labels_layer_selection = QComboBox()
         self._merged_labels_layer_selection.addItems(
             [
@@ -109,23 +131,23 @@ class TraceAnything(QWidget):
         )
         self.vbox.addWidget(self._merged_labels_layer_selection)
 
-        # add slice range selection input
-        self.vbox.addWidget(QLabel("slice range for acceptance (e.g., 1-3, 5, 9-10)"))
+        self.vbox.addWidget(QLabel("Accept Range (e.g., 1-3,5)"))
         self._slice_range_input = QLineEdit()
         self._slice_range_input.setPlaceholderText("1-3, 5, 9-10")
         self._slice_range_input.setToolTip("指定範囲のスライスのみ受け入れます。例: 1-3, 5, 9-10")
         self.vbox.addWidget(self._slice_range_input)
 
-        # add Accept and Clear buttons
-        self._accept_btn = QPushButton("Accept Prediction (A)")
+        buttons_hbox = QHBoxLayout()
+        self._accept_btn = QPushButton("Accept (A)")
         self._accept_btn.clicked.connect(lambda: self._accept_prediction(None))
-        self._accept_btn.setToolTip("予測結果を受け入れます (ショートカット: A)")
-        self.vbox.addWidget(self._accept_btn)
+        self._accept_btn.setToolTip("予測結果を受け入れます (Aキー)")
+        buttons_hbox.addWidget(self._accept_btn)
         
-        self._clear_btn = QPushButton("Clear Current Label (C)")
+        self._clear_btn = QPushButton("Clear (C)")
         self._clear_btn.clicked.connect(lambda: self._clear_current_label(None))
-        self._clear_btn.setToolTip("現在のスライスのラベルをクリアします (ショートカット: C)")
-        self.vbox.addWidget(self._clear_btn)
+        self._clear_btn.setToolTip("現在のスライスのラベルをクリア (Cキー)")
+        buttons_hbox.addWidget(self._clear_btn)
+        self.vbox.addLayout(buttons_hbox)
 
         self._sam_box_layer = self._viewer.add_shapes(
             name="SAM-Box",
@@ -410,6 +432,16 @@ class TraceAnything(QWidget):
                         cropped_mask = self.sam_segmenter.segment(
                             cropped_image, cropped_coords)
 
+                    # 小さな穴を埋める
+                    hole_threshold = self._hole_area_threshold.value()
+                    if hole_threshold > 0:
+                        cropped_mask = remove_small_holes(cropped_mask.astype(bool), area_threshold=hole_threshold)
+                    
+                    # 小さなオブジェクトを除去
+                    min_obj_size = self._min_object_size.value()
+                    if min_obj_size > 0:
+                        cropped_mask = remove_small_objects(cropped_mask.astype(bool), min_size=min_obj_size)
+
                     # マスクをオリジナルサイズに戻す
                     mask = np.zeros((height, width), dtype=bool)
                     mask[y1:y2, x1:x2] = cropped_mask
@@ -426,6 +458,16 @@ class TraceAnything(QWidget):
                     else:
                         mask = self.sam_segmenter.segment(
                             preprocessed_image, coords)
+
+                    # 小さな穴を埋める
+                    hole_threshold = self._hole_area_threshold.value()
+                    if hole_threshold > 0:
+                        mask = remove_small_holes(mask.astype(bool), area_threshold=hole_threshold)
+                    
+                    # 小さなオブジェクトを除去
+                    min_obj_size = self._min_object_size.value()
+                    if min_obj_size > 0:
+                        mask = remove_small_objects(mask.astype(bool), min_size=min_obj_size)
 
                 viewer_layer = self._viewer.layers[labels_layer_name]
                 layer_data = viewer_layer.data
