@@ -11,6 +11,7 @@ from qtpy.QtWidgets import (
     QSpinBox,
     QDoubleSpinBox,
     QCheckBox,
+    QLineEdit,
 )
 from segment_anything import sam_model_registry, SamPredictor
 from skimage.measure import label
@@ -21,6 +22,7 @@ from ._utils import (
     preprocess,
     create_boxes_list,
     SAMSegmenter,
+    parse_slice_range,
 )
 from .processing.process_slice_sequence_v2 import optimize_segmentation
 
@@ -106,6 +108,24 @@ class TraceAnything(QWidget):
             self._on_image_layer_changed
         )
         self.vbox.addWidget(self._merged_labels_layer_selection)
+
+        # add slice range selection input
+        self.vbox.addWidget(QLabel("slice range for acceptance (e.g., 1-3, 5, 9-10)"))
+        self._slice_range_input = QLineEdit()
+        self._slice_range_input.setPlaceholderText("1-3, 5, 9-10")
+        self._slice_range_input.setToolTip("指定範囲のスライスのみ受け入れます。例: 1-3, 5, 9-10")
+        self.vbox.addWidget(self._slice_range_input)
+
+        # add Accept and Clear buttons
+        self._accept_btn = QPushButton("Accept Prediction (A)")
+        self._accept_btn.clicked.connect(lambda: self._accept_prediction(None))
+        self._accept_btn.setToolTip("予測結果を受け入れます (ショートカット: A)")
+        self.vbox.addWidget(self._accept_btn)
+        
+        self._clear_btn = QPushButton("Clear Current Label (C)")
+        self._clear_btn.clicked.connect(lambda: self._clear_current_label(None))
+        self._clear_btn.setToolTip("現在のスライスのラベルをクリアします (ショートカット: C)")
+        self.vbox.addWidget(self._clear_btn)
 
         self._sam_box_layer = self._viewer.add_shapes(
             name="SAM-Box",
@@ -427,14 +447,59 @@ class TraceAnything(QWidget):
             output_layer = self._viewer.layers[
                 self._merged_labels_layer_selection.currentText()
             ]
+            
+            # 範囲指定の解析
+            range_str = self._slice_range_input.text().strip()
+            target_slices = None
+            
+            if range_str:
+                try:
+                    target_slices = parse_slice_range(range_str)
+                    print(f"指定されたスライス範囲: {target_slices}")
+                    
+                    # スライス番号の検証
+                    max_slice = input_layer.data.shape[0] - 1
+                    invalid_slices = [s for s in target_slices if s < 0 or s > max_slice]
+                    if invalid_slices:
+                        print(f"エラー: 無効なスライス番号が含まれています: {invalid_slices}")
+                        print(f"有効範囲: 0-{max_slice}")
+                        return
+                        
+                except ValueError as e:
+                    print(f"エラー: 範囲指定の解析に失敗しました: {e}")
+                    return
+            else:
+                print("範囲指定が空のため、全スライスを対象とします")
+            
             if isinstance(input_layer, napari.layers.labels.labels.Labels):
                 max_output_layer_label = np.max(output_layer.data).astype(
                     np.uint16
                 )
-                output_layer.data += (
-                    (input_layer.data == 1).astype(np.uint8)
-                    * (output_layer.data == 0).astype(np.uint8)
-                ).astype(np.uint16) * (max_output_layer_label + 1)
+                
+                if target_slices is not None:
+                    # 指定されたスライスのみ処理
+                    for slice_idx in target_slices:
+                        if slice_idx < input_layer.data.shape[0]:
+                            # 該当スライスのみを処理
+                            input_slice = input_layer.data[slice_idx]
+                            output_slice = output_layer.data[slice_idx]
+                            
+                            # マスクを適用（label==1の領域のみ）
+                            mask = (input_slice == 1).astype(np.uint8) * (output_slice == 0).astype(np.uint8)
+                            if np.any(mask):
+                                output_layer.data[slice_idx] += mask.astype(np.uint16) * (max_output_layer_label + 1)
+                                max_output_layer_label += 1  # 次のラベル番号を更新
+                    
+                    print(f"完了: {len(target_slices)}個のスライス ({target_slices}) にラベルを転送しました")
+                else:
+                    # 全スライスを処理（従来の動作）
+                    output_layer.data += (
+                        (input_layer.data == 1).astype(np.uint8)
+                        * (output_layer.data == 0).astype(np.uint8)
+                    ).astype(np.uint16) * (max_output_layer_label + 1)
+                    print("完了: 全スライスにラベルを転送しました")
+                
+                # 予測ラベルレイヤーをクリア
                 self._predict_label_layer.data = np.zeros_like(
                     self._predict_label_layer.data
                 )
