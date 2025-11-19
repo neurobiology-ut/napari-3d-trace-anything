@@ -206,6 +206,8 @@ class TraceAnything(QWidget):
                         )
                     ]
                 )
+                # Merged-LabelをMerged Labels Layerのデフォルトとして設定
+                self._merged_labels_layer_selection.setCurrentText("Merged-Label")
 
             else:
                 print("image type check failed")
@@ -305,6 +307,8 @@ class TraceAnything(QWidget):
             )
             self._start_slice.setMaximum(self._maximum_slice)
             self._end_slice.setMaximum(self._maximum_slice)
+            # End Sliceのデフォルト値を最終スライスに設定
+            self._end_slice.setValue(self._maximum_slice)
 
     def _trace(self):
         if self._worker:
