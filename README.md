@@ -34,6 +34,53 @@ To install latest development version :
     pip install git+https://github.com/neurobiology-ut/napari-3d-trace-anything.git
 
 
+## Usage
+
+### Setup
+
+1. Open a 3D image stack in napari
+2. Open the plugin from **Plugins > napari-3d-trace-anything**
+3. Select a SAM model (e.g. `vit_h`) and click **load model** (the checkpoint is downloaded automatically on first use to `~/.cache/napari-3d-Trace-Anything/`)
+4. Select your image in **input image layer** — the plugin will create **Predicted-Label** and **Merged-Label** layers automatically
+5. Create or select an existing labels layer and set it as **output labels layer** — this is the working layer where trace results are written
+6. Set **merged labels layer** to the layer where you want to accumulate finalized results (default: **Merged-Label**)
+
+### Basic tracing (instance mode OFF)
+
+1. Set **start slice** and **end slice** for the range to trace
+2. Switch to the **SAM-Box** shapes layer and draw a bounding box around the object on the start slice
+3. Click **trace** — the plugin propagates the segmentation slice by slice using SAM, writing results to **Predicted-Label**
+4. Press **A** to accept: the prediction is transferred to the merged labels layer with a new label number, and Predicted-Label is cleared
+5. Repeat for other objects
+
+### Instance mode (instance mode ON)
+
+When **instance mode** is checked, each bounding box is assigned a specific label number that is maintained across slices.
+
+1. Check the **instance mode** checkbox
+2. Draw a bounding box on the SAM-Box layer — a dialog appears asking for the instance number
+3. Draw additional boxes with different numbers if needed
+4. Click **trace** — each object keeps its assigned number across slices
+5. Press **A** to accept: label numbers are copied as-is to the merged labels layer (existing labels are not overwritten)
+
+### Options
+
+- **margin ratio**: Adjusts the bounding box margin for automatic box generation from previous slice labels. Positive values expand boxes, negative values shrink them (range: -1.0 to 1.0)
+- **self-optimization**: When checked, uses iterative refinement (re-boxing from mask regionprops until IoU converges) for each slice instead of single-pass SAM prediction
+
+### Keyboard shortcuts
+
+| Key | Action |
+|-----|--------|
+| **A** | Accept prediction — transfer Predicted-Label to merged labels layer |
+| **C** | Clear the current slice in the output labels layer |
+
+### Workflow tips
+
+- **Branching objects**: If a traced object splits into two, accept the first trace to merged, then re-trace from the branch point with the same label number. The `cleared_labels` mechanism in `_predict` will replace the old trace in Predicted-Label, while the accepted portion remains safe in the merged layer.
+- **Correcting a trace**: Simply re-draw a box with the same instance number and trace again. The new result overwrites the old one in Predicted-Label. Accept when satisfied.
+- **Large images**: Images larger than 1024x1024 are automatically cropped around each bounding box for SAM inference, so there is no need to manually resize.
+
 ## Contributing
 
 Contributions are very welcome. Tests can be run with [tox], please ensure
