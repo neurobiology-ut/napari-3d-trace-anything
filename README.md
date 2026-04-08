@@ -42,7 +42,7 @@ To install latest development version :
 2. Open the plugin from **Plugins > napari-3d-trace-anything**
 3. Select a SAM model (e.g. `vit_h`) and click **load model** (the checkpoint is downloaded automatically on first use to `~/.cache/napari-3d-Trace-Anything/`)
 4. Select your image in **input image layer** — the plugin will create **Predicted-Label** and **Merged-Label** layers automatically
-5. Create or select an existing labels layer and set it as **output labels layer** — this is the working layer where trace results are written
+5. Create or select an existing labels layer and set it as **output labels layer** — this layer is used as a reference for generating bounding boxes from the previous slice (trace results are written to **Predicted-Label**)
 6. Set **merged labels layer** to the layer where you want to accumulate finalized results (default: **Merged-Label**)
 
 ### Basic tracing (instance mode OFF)

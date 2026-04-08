@@ -9,12 +9,13 @@ def widget(make_napari_viewer):
     viewer = make_napari_viewer()
     viewer.add_image(np.random.random((10, 100, 100)), name="test-image")
     w = TraceAnything(viewer)
-    w._merged_labels_layer_selection.setCurrentText("Merged-Label")
     return w
 
 
 def merged_layer(widget):
-    return widget._viewer.layers["Merged-Label"]
+    return widget._viewer.layers[
+        f"{TraceAnything.MERGED_LABEL_PREFIX}-test-image"
+    ]
 
 
 def test_widget_creation(widget):

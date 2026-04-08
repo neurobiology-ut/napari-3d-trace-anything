@@ -1,19 +1,22 @@
 """Test for box generation functionality."""
 
 import os
+
 import numpy as np
-import torch
 import tifffile
+import torch
 from segment_anything import (
-    sam_model_registry as sam_registry,
     SamPredictor,
 )
+from segment_anything import (
+    sam_model_registry as sam_registry,
+)
 
+from .._utils import create_boxes_list
 from ..processing.box_generation import (
     generate_box_candidates,
     process_slice_sequence,
 )
-from .._utils import create_boxes_list
 
 
 def test_multiple_blobs_same_label():
@@ -31,7 +34,7 @@ def test_multiple_blobs_same_label():
 
     # 2つのblobに対して2つのバウンディングボックスが生成されることを確認
     assert len(boxes) == 2, "2つのblobに対して2つのバウンディングボックスが生成されるべき"
-    
+
     # ラベル値が正しく対応していることを確認
     assert len(label_values) == 2, "2つのblobに対して2つのラベル値が存在するべき"
     assert all(val == 1 for val in label_values), "すべてのラベル値が1であるべき"
@@ -39,7 +42,7 @@ def test_multiple_blobs_same_label():
     # それぞれのボックスが正しい形状を持つことを確認
     for box in boxes:
         assert box.shape == (4, 3), "各ボックスは4つの点と3つの座標値(z,y,x)を持つべき"
-        
+
     # 1つ目のblobのバウンディングボックス
     box1 = boxes[0]
     assert box1[0][1] == 5 and box1[0][2] == 5, "1つ目のblobの左上座標が正しくない"
@@ -60,9 +63,9 @@ def test_box_candidates_count():
         [0, 20, 20],  # z, y2, x2
         [0, 20, 10],  # z, y2, x1
     ])
-    
+
     candidates = generate_box_candidates(test_box)
-    
+
     # 3(スケール) x 3(アスペクト比) x 9(位置) = 81個の候補
     assert candidates.shape == (81, 4, 3)
 
@@ -76,35 +79,35 @@ def test_box_transformations():
         [0, 20, 20],
         [0, 20, 10],
     ])
-    
+
     candidates = generate_box_candidates(test_box)
-    
+
     # 元のボックスの中心
     original_center_y = 15
     original_center_x = 15
-    
+
     # スケール0.9のボックスをチェック
     scaled_box = candidates[0]  # 最初の候補（0.9倍、アスペクト比1.0）
     height = scaled_box[2][1] - scaled_box[0][1]
     width = scaled_box[1][2] - scaled_box[0][2]
-    
+
     assert np.isclose(height, 9.0)  # 10 * 0.9
     assert np.isclose(width, 9.0)   # 10 * 0.9
-    
+
     # アスペクト比1.1のボックスをチェック
     # （スケール0.9、アスペクト比1.1のグループの最初）
     aspect_box = candidates[9]
     height = aspect_box[2][1] - aspect_box[0][1]
     width = aspect_box[1][2] - aspect_box[0][2]
-    
+
     assert np.isclose(width / height, 1.1)  # アスペクト比
-    
+
     # 位置オフセットのチェック
     # （スケール0.9、アスペクト比1.0の3番目のボックス）
     offset_box = candidates[2]
     center_y = (offset_box[0][1] + offset_box[2][1]) / 2
     center_x = (offset_box[0][2] + offset_box[1][2]) / 2
-    
+
     assert not np.isclose(center_y, original_center_y)  # 中心位置が変化
     assert not np.isclose(center_x, original_center_x)  # 中心位置が変化
 
@@ -117,13 +120,13 @@ def test_box_coordinates():
         [0, 20, 20],
         [0, 20, 10],
     ])
-    
+
     candidates = generate_box_candidates(test_box)
-    
+
     for box in candidates:
         # zの値が保持されていることを確認
         assert np.all(box[:, 0] == 0)
-        
+
         # 座標の接続が正しいことを確認
         assert np.isclose(box[0][1], box[1][1])  # y1は同じ
         assert np.isclose(box[2][1], box[3][1])  # y2は同じ
@@ -171,11 +174,11 @@ def test_process_slice_sequence():
     # 最初のスライス（z+1）では3つのボックスが選択される
     assert len(boxes_history[0]) == 3
     assert len(masks_history[0]) == 3
-    
+
     # 次のスライス（z+2）では前のスライスの各ボックスに対して3つずつ選択される（計9個）
     assert len(boxes_history[1]) == 9
     assert len(masks_history[1]) == 9
-    
+
     # すべてのボックスの形状を確認
     for boxes in boxes_history:
         for box in boxes:
@@ -189,7 +192,7 @@ def test_process_slice_sequence():
         # RGB画像に変換
         if len(img.shape) == 2:
             img = np.stack([img] * 3, axis=2)
-        
+
         # すべての候補ボックスを描画（青色）
         if z_idx == 0:  # 最初のスライスの場合
             candidates = generate_box_candidates(initial_box)
@@ -198,29 +201,29 @@ def test_process_slice_sequence():
             for prev_box in boxes_history[z_idx - 1]:
                 candidates.extend(generate_box_candidates(prev_box))
             candidates = np.array(candidates)
-        
+
         # 候補ボックスを青色で描画
         for box in candidates:
             y1, x1 = int(box[0][1]), int(box[0][2])
             y2, x2 = int(box[2][1]), int(box[2][2])
-            
+
             # 青色でボックスを描画
             img[y1:y2, x1-1:x1+1] = [0, 0, 255]  # 左辺
             img[y1:y2, x2-1:x2+1] = [0, 0, 255]  # 右辺
             img[y1-1:y1+1, x1:x2] = [0, 0, 255]  # 上辺
             img[y2-1:y2+1, x1:x2] = [0, 0, 255]  # 下辺
-        
+
         # 選択されたボックスを赤色で描画（上書き）
         for box in boxes:
             y1, x1 = int(box[0][1]), int(box[0][2])
             y2, x2 = int(box[2][1]), int(box[2][2])
-            
+
             # 赤色でボックスを描画
             img[y1:y2, x1-1:x1+1] = [255, 0, 0]  # 左辺
             img[y1:y2, x2-1:x2+1] = [255, 0, 0]  # 右辺
             img[y1-1:y1+1, x1:x2] = [255, 0, 0]  # 上辺
             img[y2-1:y2+1, x1:x2] = [255, 0, 0]  # 下辺
-        
+
         # 画像を保存（ファイル名にスライス番号を含める）
         output_path = os.path.join(
             root_dir,

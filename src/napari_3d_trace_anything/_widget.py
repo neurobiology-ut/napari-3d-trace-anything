@@ -3,38 +3,45 @@ import numpy as np
 import torch
 from napari._qt.qthreading import create_worker
 from qtpy.QtWidgets import (
-    QVBoxLayout,
-    QPushButton,
-    QWidget,
-    QComboBox,
-    QLabel,
-    QSpinBox,
-    QDoubleSpinBox,
     QCheckBox,
+    QComboBox,
+    QDoubleSpinBox,
     QInputDialog,
+    QLabel,
+    QPushButton,
+    QSpinBox,
+    QVBoxLayout,
+    QWidget,
 )
-from segment_anything import sam_model_registry, SamPredictor
+from segment_anything import SamPredictor, sam_model_registry
 from tqdm import tqdm
+
 from ._utils import (
+    SAMSegmenter,
     check_image_type,
+    create_boxes_list,
     load_model,
     preprocess,
-    create_boxes_list,
-    SAMSegmenter,
 )
 from .processing.process_slice_sequence_v2 import optimize_segmentation
 
 
 class TraceAnything(QWidget):
+    PREDICTED_LABEL_NAME = "Predicted-Label"
+    MERGED_LABEL_PREFIX = "Merged-Label"
+    LABELS_PREFIX = "Labels"
+
     def __init__(self, napari_viewer):
         super().__init__()
         self._viewer = napari_viewer
         self._labels_layer_selection = None
         self._image_type = None
         self._current_slice = None
+        self._current_image_shape = None
         self._minimum_slice = 0
         self._maximum_slice = 1
         self._worker = None
+        self._layer_events_connected = False
 
         self.vbox = QVBoxLayout()
         self._model_selection = QComboBox()
@@ -49,7 +56,7 @@ class TraceAnything(QWidget):
             [
                 layer.name
                 for layer in self._viewer.layers
-                if isinstance(layer, napari.layers.image.image.Image)
+                if isinstance(layer, napari.layers.Image)
             ]
         )
         self._image_layer_selection.currentTextChanged.connect(
@@ -62,7 +69,7 @@ class TraceAnything(QWidget):
             [
                 layer.name
                 for layer in self._viewer.layers
-                if isinstance(layer, napari.layers.labels.labels.Labels)
+                if isinstance(layer, napari.layers.Labels)
             ]
         )
         self.vbox.addWidget(self._labels_layer_selection)
@@ -104,15 +111,12 @@ class TraceAnything(QWidget):
             [
                 layer.name
                 for layer in self._viewer.layers
-                if isinstance(layer, napari.layers.labels.labels.Labels)
+                if isinstance(layer, napari.layers.Labels)
             ]
-        )
-        self._merged_labels_layer_selection.currentTextChanged.connect(
-            self._on_image_layer_changed
         )
         self.vbox.addWidget(self._merged_labels_layer_selection)
 
-        self.initVariables()
+        self._init_variables()
 
         self._sam_box_layer = self._viewer.add_shapes(
             name="SAM-Box",
@@ -153,13 +157,14 @@ class TraceAnything(QWidget):
             self._on_layer_list_changed
         )
         self._viewer.layers.events.removed.connect(self._on_layer_list_changed)
+        self._layer_events_connected = True
 
         self._viewer.bind_key("C", self._clear_current_label)
         self._viewer.bind_key("A", self._accept_prediction)
 
         self._on_layer_list_changed(None)
 
-    def initVariables(self):
+    def _init_variables(self):
         """Initializes the variables."""
         self.features = {"class": []}
         self.text = {
@@ -187,6 +192,7 @@ class TraceAnything(QWidget):
                     "Enter instance number:",
                     value=1,
                     min=1,
+                    max=np.iinfo(np.uint16).max,
                 )
                 if ok:
                     layer.features.loc[
@@ -213,37 +219,31 @@ class TraceAnything(QWidget):
             ].refresh()
 
     def _on_layer_list_changed(self, event):
-        if event is not None:
-            print(event.value)
-            if isinstance(event.value, napari.layers.image.image.Image):
-                self._image_layer_selection.clear()
-                self._image_layer_selection.addItems(
-                    [
-                        layer.name
-                        for layer in self._viewer.layers
-                        if isinstance(layer, napari.layers.image.image.Image)
-                    ]
-                )
+        if event is None:
+            return
+        if isinstance(event.value, napari.layers.Image):
+            self._image_layer_selection.clear()
+            self._image_layer_selection.addItems(
                 [
-                    self._viewer.layers.move(i, 0)
-                    for i, layer in enumerate(self._viewer.layers)
-                    if isinstance(layer, napari.layers.image.image.Image)
+                    layer.name
+                    for layer in self._viewer.layers
+                    if isinstance(layer, napari.layers.Image)
                 ]
-                self._on_image_layer_changed(None)
-            elif isinstance(event.value, napari.layers.labels.labels.Labels):
-                self._labels_layer_selection.clear()
-                self._labels_layer_selection.addItems(
-                    [
-                        layer.name
-                        for layer in self._viewer.layers
-                        if isinstance(
-                            layer,
-                            napari.layers.labels.labels.Labels
-                        )
-                    ]
+            )
+            for i, layer in enumerate(self._viewer.layers):
+                if isinstance(layer, napari.layers.Image):
+                    self._viewer.layers.move(i, 0)
+            self._on_image_layer_changed(None)
+        elif isinstance(event.value, napari.layers.Labels):
+            if self._current_image_shape is not None:
+                layer_name = self._image_layer_selection.currentText()
+                merged_name = f"{self.MERGED_LABEL_PREFIX}-{layer_name}"
+                labels_name = f"{self.LABELS_PREFIX}-{layer_name}"
+                self._refresh_label_comboboxes(
+                    self._current_image_shape,
+                    labels_name,
+                    merged_name,
                 )
-            else:
-                pass
 
     def _load_model(self):
         model_name = self._model_selection.currentText()
@@ -253,6 +253,67 @@ class TraceAnything(QWidget):
         # SAMSegmenterインスタンスの作成
         self.sam_segmenter = SAMSegmenter(self.sam_predictor)
         print("model loaded")
+
+    def _suppress_layer_events(self):
+        """Context-manager-like disconnect/reconnect for layer events."""
+        try:
+            self._viewer.layers.events.inserted.disconnect(
+                self._on_layer_list_changed
+            )
+            self._viewer.layers.events.removed.disconnect(
+                self._on_layer_list_changed
+            )
+            self._layer_events_connected = False
+        except (TypeError, ValueError):
+            pass
+
+    def _restore_layer_events(self):
+        if not self._layer_events_connected:
+            self._viewer.layers.events.inserted.connect(
+                self._on_layer_list_changed
+            )
+            self._viewer.layers.events.removed.connect(
+                self._on_layer_list_changed
+            )
+            self._layer_events_connected = True
+
+    def _get_or_create_labels_layer(self, name, shape):
+        """Return existing layer if name matches, else create new."""
+        for layer in self._viewer.layers:
+            if (
+                isinstance(layer, napari.layers.Labels)
+                and layer.name == name
+            ):
+                return layer
+        return self._viewer.add_labels(
+            np.zeros(shape, dtype="uint16"),
+            name=name,
+            blending="additive",
+            opacity=0.5,
+        )
+
+    def _refresh_label_comboboxes(self, image_shape, default_labels, default_merged):
+        """Repopulate label comboboxes with shape-compatible layers only."""
+        compatible = [
+            layer.name
+            for layer in self._viewer.layers
+            if (
+                isinstance(layer, napari.layers.Labels)
+                and layer.data.shape == image_shape
+            )
+        ]
+
+        for combo, default in [
+            (self._labels_layer_selection, default_labels),
+            (self._merged_labels_layer_selection, default_merged),
+        ]:
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItems(compatible)
+            idx = combo.findText(default)
+            if idx >= 0:
+                combo.setCurrentIndex(idx)
+            combo.blockSignals(False)
 
     def _on_image_layer_changed(self, index):
         layer_name = self._image_layer_selection.currentText()
@@ -274,39 +335,40 @@ class TraceAnything(QWidget):
             image_shape = self._viewer.layers[
                 layer_name
             ].data.shape
+            self._current_image_shape = image_shape
 
-            # Create Predicted-Label layer if not yet created
+            # Suppress layer events during batch layer creation
+            self._suppress_layer_events()
+
+            # Predicted-Label: recreate on shape change, clear on image switch
+            if self._predict_label_layer is not None:
+                if self._predict_label_layer.data.shape != image_shape:
+                    self._viewer.layers.remove(self._predict_label_layer)
+                    self._predict_label_layer = None
+                else:
+                    self._predict_label_layer.data = np.zeros(
+                        image_shape, dtype="uint16"
+                    )
+                    self._predict_label_layer.refresh()
             if self._predict_label_layer is None:
                 self._predict_label_layer = self._viewer.add_labels(
                     np.zeros(image_shape, dtype="uint16"),
-                    name="Predicted-Label",
+                    name=self.PREDICTED_LABEL_NAME,
                     blending="additive",
                     opacity=0.5,
                 )
-                self._viewer.add_labels(
-                    np.zeros(image_shape, dtype="uint16"),
-                    name="Merged-Label",
-                    blending="additive",
-                    opacity=0.5,
-                )
-                self._labels_layer_selection.addItems(
-                    [
-                        layer.name
-                        for layer in self._viewer.layers
-                        if isinstance(
-                            layer, napari.layers.labels.labels.Labels
-                        )
-                    ]
-                )
-                self._merged_labels_layer_selection.addItems(
-                    [
-                        layer.name
-                        for layer in self._viewer.layers
-                        if isinstance(
-                            layer, napari.layers.labels.labels.Labels
-                        )
-                    ]
-                )
+
+            # Per-image Merged-Label and Labels layers
+            merged_name = f"{self.MERGED_LABEL_PREFIX}-{layer_name}"
+            labels_name = f"{self.LABELS_PREFIX}-{layer_name}"
+            self._get_or_create_labels_layer(merged_name, image_shape)
+            self._get_or_create_labels_layer(labels_name, image_shape)
+
+            self._restore_layer_events()
+
+            self._refresh_label_comboboxes(
+                image_shape, labels_name, merged_name
+            )
 
     def _trace(self):
         if self._worker:
@@ -335,6 +397,8 @@ class TraceAnything(QWidget):
             self._image_layer_selection.currentText()
         ].data
         labels_layer_name = self._labels_layer_selection.currentText()
+        if not labels_layer_name:
+            return
         if self._start_slice.value() > self._end_slice.value():
             for i in tqdm(
                 range(
@@ -488,6 +552,8 @@ class TraceAnything(QWidget):
         return mask
 
     def _accept_prediction(self, layer):
+        if self._predict_label_layer is None:
+            return
         if (
             self._merged_labels_layer_selection.currentText() == ""
         ):
