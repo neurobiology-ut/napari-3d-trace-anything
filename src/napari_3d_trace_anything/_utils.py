@@ -101,13 +101,17 @@ def create_box(props, mergin_ratio=0.0):
     # return [minc, minr, maxc, maxr]  # x1, y1, x2, y2の順序
 
 
-def create_boxes_list(labels, margin_ratio=0.0):
+def create_boxes_list(
+    labels, margin_ratio=0.0, max_objects=0, min_area=0
+):
     """ラベル画像から複数のバウンディングボックスを作成
 
     Args:
         labels: ラベル付けされた画像。同じラベル値を持つ複数のblobが存在する場合、
                それぞれのblobに対して個別のバウンディングボックスが生成されます。
         margin_ratio (float): バウンディングボックスのマージン比率
+        max_objects (int): ラベルごとの最大オブジェクト数 (0=無制限)
+        min_area (int): 最小面積閾値 (0=フィルタなし)
 
     Returns:
         tuple: (boxes, label_values)
@@ -128,12 +132,24 @@ def create_boxes_list(labels, margin_ratio=0.0):
         binary_mask = (labels == label_val)
         # 各blobを個別にラベリング
         components = label(binary_mask)
+        props_list = list(regionprops(components))
+
+        # 面積閾値フィルタ
+        if min_area > 0:
+            props_list = [
+                p for p in props_list if p.area >= min_area
+            ]
+
+        # 面積降順ソート → Top-N (sort only when needed)
+        if max_objects > 0:
+            props_list = sorted(
+                props_list, key=lambda p: p.area, reverse=True
+            )
+            props_list = props_list[:max_objects]
 
         # 各blobに対してバウンディングボックスを生成
-        for props in regionprops(components):
-            # create_boxを使用してバウンディングボックスを取得
+        for props in props_list:
             box_coords = create_box(props, margin_ratio)
-            # 座標形式を変換
             box = np.array([
                 [0, box_coords[1], box_coords[0]],  # [z, y1, x1]
                 [0, box_coords[1], box_coords[2]],  # [z, y1, x2]
@@ -237,7 +253,7 @@ def preprocess(image, image_type, slice_index):
     """画像の前処理を行う
 
     Args:
-        image (np.ndarray): 入力画像
+        image (np.ndarray or dask.array): 入力画像
         image_type (str): 画像タイプ
         slice_index (int): スライスインデックス
 
@@ -245,7 +261,12 @@ def preprocess(image, image_type, slice_index):
         np.ndarray: 前処理された画像
     """
     if "stack" in image_type:
-        return image[slice_index]
+        slice_data = image[slice_index]
+        if hasattr(slice_data, "compute"):
+            return slice_data.compute()
+        return slice_data
+    if hasattr(image, "compute"):
+        return image.compute()
     return image
 
 
@@ -272,3 +293,59 @@ def check_image_type(viewer, layer_name):
         return "Not supported"
 
 
+def parse_slice_range(range_str):
+    """Parse a range string into a sorted list of unique slice numbers.
+
+    Examples:
+        "1-3, 5, 9-10" -> [1, 2, 3, 5, 9, 10]
+        "" -> []
+
+    Args:
+        range_str (str): Range string (e.g., "1-3, 5, 9-10")
+
+    Returns:
+        list: Sorted list of unique slice numbers
+
+    Raises:
+        ValueError: If the range string is invalid
+    """
+    if not range_str or not range_str.strip():
+        return []
+
+    slice_numbers = []
+    parts = [part.strip() for part in range_str.split(",")]
+
+    for part in parts:
+        if not part:
+            continue
+        if "-" in part:
+            try:
+                start_str, end_str = part.split("-", 1)
+                start = int(start_str.strip())
+                end = int(end_str.strip())
+                if start > end:
+                    raise ValueError(
+                        f"Invalid range: {part} (start > end)"
+                    )
+                if (end - start) > 100_000:
+                    raise ValueError(
+                        f"Range too large: {part}"
+                    )
+                slice_numbers.extend(range(start, end + 1))
+            except ValueError as e:
+                if "Invalid range" in str(e) or (
+                    "Range too large" in str(e)
+                ):
+                    raise
+                raise ValueError(
+                    f"Invalid range: {part}"
+                ) from e
+        else:
+            try:
+                slice_numbers.append(int(part.strip()))
+            except ValueError as e:
+                raise ValueError(
+                    f"Invalid slice number: {part}"
+                ) from e
+
+    return sorted(set(slice_numbers))
