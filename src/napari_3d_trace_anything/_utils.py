@@ -15,8 +15,11 @@ class SAMSegmenter:
         Args:
             predictor (SamPredictor): SAMのpredictor
         """
-        if not isinstance(predictor, SamPredictor):
-            raise ValueError("predictor must be an instance of SamPredictor")
+        if not (
+            isinstance(predictor, SamPredictor)
+            or (hasattr(predictor, "set_image") and hasattr(predictor, "predict"))
+        ):
+            raise ValueError("predictor must be a SamPredictor or duck-type compatible")
         self.predictor = predictor
         self.current_image = None
 

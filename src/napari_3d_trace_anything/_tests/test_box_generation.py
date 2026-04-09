@@ -3,6 +3,7 @@
 import os
 
 import numpy as np
+import pytest
 import tifffile
 import torch
 from segment_anything import (
@@ -10,6 +11,14 @@ from segment_anything import (
 )
 from segment_anything import (
     sam_model_registry as sam_registry,
+)
+
+SAM_CHECKPOINT = os.path.expanduser(
+    "~/.cache/napari-3d-Trace-Anything/sam_vit_h_4b8939.pth"
+)
+requires_sam_model = pytest.mark.skipif(
+    not os.path.exists(SAM_CHECKPOINT),
+    reason="SAM model checkpoint not available",
 )
 
 from .._utils import create_boxes_list
@@ -134,6 +143,7 @@ def test_box_coordinates():
         assert np.isclose(box[0][2], box[3][2])  # x1は同じ
 
 
+@requires_sam_model
 def test_process_slice_sequence():
     """スライスシーケンス処理のテスト"""
     # SAMモデルのセットアップ
