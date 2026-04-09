@@ -2,7 +2,6 @@ import os
 import urllib
 
 import numpy as np
-from segment_anything import SamPredictor, sam_model_registry
 from skimage.color import gray2rgb
 from skimage.measure import label, regionprops
 
@@ -15,6 +14,8 @@ class SAMSegmenter:
         Args:
             predictor (SamPredictor): SAMのpredictor
         """
+        from segment_anything import SamPredictor
+
         if not (
             isinstance(predictor, SamPredictor)
             or (hasattr(predictor, "set_image") and hasattr(predictor, "predict"))
@@ -212,6 +213,8 @@ def load_model(model_name):
     os.makedirs(os.path.dirname(model_path), exist_ok=True)
     if not os.path.exists(model_path):
         autodownload(model_url)
+    from segment_anything import sam_model_registry
+
     sam = sam_model_registry[model_name](checkpoint=model_path)
     return sam
 

@@ -4,14 +4,6 @@ import os
 
 import numpy as np
 import pytest
-import tifffile
-import torch
-from segment_anything import (
-    SamPredictor,
-)
-from segment_anything import (
-    sam_model_registry as sam_registry,
-)
 
 SAM_CHECKPOINT = os.path.expanduser(
     "~/.cache/napari-3d-Trace-Anything/sam_vit_h_4b8939.pth"
@@ -146,6 +138,11 @@ def test_box_coordinates():
 @requires_sam_model
 def test_process_slice_sequence():
     """スライスシーケンス処理のテスト"""
+    import tifffile
+    import torch
+    from segment_anything import SamPredictor
+    from segment_anything import sam_model_registry as sam_registry
+
     # SAMモデルのセットアップ
     model_type = "vit_h"
     sam_checkpoint = os.path.expanduser(

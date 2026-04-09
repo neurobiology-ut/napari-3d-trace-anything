@@ -1,6 +1,5 @@
 import napari
 import numpy as np
-import torch
 from napari._qt.qthreading import create_worker
 from qtpy.QtWidgets import (
     QCheckBox,
@@ -13,7 +12,6 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from segment_anything import SamPredictor, sam_model_registry
 from tqdm import tqdm
 
 from ._utils import (
@@ -45,6 +43,7 @@ class TraceAnything(QWidget):
 
         self.vbox = QVBoxLayout()
         self._model_selection = QComboBox()
+        from segment_anything import sam_model_registry
         self._model_selection.addItems(list(sam_model_registry.keys()))
         self.vbox.addWidget(self._model_selection)
         self._model_load_btn = QPushButton("load model")
@@ -143,6 +142,7 @@ class TraceAnything(QWidget):
         self.setLayout(self.vbox)
         self.show()
 
+        import torch
         if torch.cuda.is_available():
             self.device = "cuda"
         elif torch.backends.mps.is_available():
@@ -246,6 +246,8 @@ class TraceAnything(QWidget):
                 )
 
     def _load_model(self):
+        from segment_anything import SamPredictor
+
         model_name = self._model_selection.currentText()
         self._sam_model = load_model(model_name)
         self._sam_model.to(device=self.device)
