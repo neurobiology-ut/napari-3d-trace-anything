@@ -2,9 +2,8 @@ import os
 import urllib
 
 import numpy as np
-from segment_anything import sam_model_registry, SamPredictor
 from skimage.color import gray2rgb
-from skimage.measure import regionprops
+from skimage.measure import label, regionprops
 
 
 class SAMSegmenter:
@@ -15,8 +14,8 @@ class SAMSegmenter:
         Args:
             predictor (SamPredictor): SAMのpredictor
         """
-        if not isinstance(predictor, SamPredictor):
-            raise ValueError("predictor must be an instance of SamPredictor")
+        if not (hasattr(predictor, "set_image") and hasattr(predictor, "predict")):
+            raise ValueError("predictor must have set_image and predict methods")
         self.predictor = predictor
         self.current_image = None
 
@@ -32,7 +31,7 @@ class SAMSegmenter:
         """
         # boxをnumpy配列に変換
         box = np.array(box)
-        
+
         # グレースケール画像の場合、RGB形式に変換
         if len(image.shape) == 2:
             image = gray2rgb(image)
@@ -106,26 +105,45 @@ def create_boxes_list(labels, margin_ratio=0.0):
     """ラベル画像から複数のバウンディングボックスを作成
 
     Args:
-        labels: ラベル付けされた画像
-        mergin_ratio (float): バウンディングボックスのマージン比率
+        labels: ラベル付けされた画像。同じラベル値を持つ複数のblobが存在する場合、
+               それぞれのblobに対して個別のバウンディングボックスが生成されます。
+        margin_ratio (float): バウンディングボックスのマージン比率
 
     Returns:
-        list: [[z, y1, x1], [z, y1, x2], [z, y2, x2], [z, y2, x1]]
-            形式のバウンディングボックスのリスト
+        tuple: (boxes, label_values)
+            boxes: [[z, y1, x1], [z, y1, x2], [z, y2, x2], [z, y2, x1]]
+                形式のバウンディングボックスのリスト。各要素はnp.array
+            label_values: 各バウンディングボックスに対応する元のラベル値のリスト
     """
     boxes = []
-    for props in regionprops(labels):
-        # create_boxを使用してバウンディングボックスを取得
-        box_coords = create_box(props, margin_ratio)
-        # 座標形式を変換
-        box = np.array([
-            [0, box_coords[1], box_coords[0]],  # [z, y1, x1]
-            [0, box_coords[1], box_coords[2]],  # [z, y1, x2]
-            [0, box_coords[3], box_coords[2]],  # [z, y2, x2]
-            [0, box_coords[3], box_coords[0]],  # [z, y2, x1]
-        ])
-        boxes.append(box)
-    return boxes
+    label_values = []
+
+    # ユニークなラベル値を取得（0は背景として除外）
+    unique_labels = np.unique(labels)
+    unique_labels = unique_labels[unique_labels != 0]
+
+    # 各ラベル値について処理
+    for label_val in unique_labels:
+        # 現在のラベル値のマスクを作成
+        binary_mask = (labels == label_val)
+        # 各blobを個別にラベリング
+        components = label(binary_mask)
+
+        # 各blobに対してバウンディングボックスを生成
+        for props in regionprops(components):
+            # create_boxを使用してバウンディングボックスを取得
+            box_coords = create_box(props, margin_ratio)
+            # 座標形式を変換
+            box = np.array([
+                [0, box_coords[1], box_coords[0]],  # [z, y1, x1]
+                [0, box_coords[1], box_coords[2]],  # [z, y1, x2]
+                [0, box_coords[3], box_coords[2]],  # [z, y2, x2]
+                [0, box_coords[3], box_coords[0]],  # [z, y2, x1]
+            ])
+            boxes.append(box)
+            label_values.append(label_val)
+
+    return boxes, label_values
 
 
 def segment_with_sam(predictor, image, box):
@@ -190,6 +208,8 @@ def load_model(model_name):
     os.makedirs(os.path.dirname(model_path), exist_ok=True)
     if not os.path.exists(model_path):
         autodownload(model_url)
+    from segment_anything import sam_model_registry
+
     sam = sam_model_registry[model_name](checkpoint=model_path)
     return sam
 
@@ -232,15 +252,7 @@ def preprocess(image, image_type, slice_index):
 def check_image_type(viewer, layer_name):
     image = viewer.layers[layer_name].data
     print(f"current image shape = {image.shape}")
-    if len(image.shape) == 2:  # Gray
-        return "Not supported"
-    elif len(image.shape) > 4:
-        return "Not supported"
-    elif (len(image.shape) == 3) & (image.shape[-1] == 4):
-        return "Not supported"
-    elif (len(image.shape) == 3) & (image.shape[-1] == 1):  # Gray
-        return "Not supported"
-    elif (len(image.shape) == 3) & (image.shape[-1] == 2):
+    if len(image.shape) == 2 or len(image.shape) > 4 or (len(image.shape) == 3) & (image.shape[-1] == 4) or (len(image.shape) == 3) & (image.shape[-1] == 1) or (len(image.shape) == 3) & (image.shape[-1] == 2):  # Gray
         return "Not supported"
     elif (len(image.shape) == 3) & (
         image.shape[-1] > 4
@@ -254,11 +266,7 @@ def check_image_type(viewer, layer_name):
         image.shape[-1] == 3
     ):  # maybe stacked RGB images
         return "stacked RGB images"
-    elif (len(image.shape) == 4) & (image.shape[-1] == 2):
-        return "Not supported"
-    elif (len(image.shape) == 4) & (image.shape[-1] > 4):
-        return "Not supported"
-    elif (len(image.shape) == 3) & (image.shape[-1] == 3):
+    elif (len(image.shape) == 4) & (image.shape[-1] == 2) or (len(image.shape) == 4) & (image.shape[-1] > 4) or (len(image.shape) == 3) & (image.shape[-1] == 3):
         return "Not supported"
     else:
         return "Not supported"

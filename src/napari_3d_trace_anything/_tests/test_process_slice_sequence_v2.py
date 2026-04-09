@@ -1,13 +1,16 @@
 """Test cases for process_slice_sequence_v2."""
 
 import os
+
 import numpy as np
 import pytest
-import torch
-import tifffile
-from segment_anything import (
-    sam_model_registry as sam_registry,
-    SamPredictor,
+
+SAM_CHECKPOINT = os.path.expanduser(
+    "~/.cache/napari-3d-Trace-Anything/sam_vit_h_4b8939.pth"
+)
+requires_sam_model = pytest.mark.skipif(
+    not os.path.exists(SAM_CHECKPOINT),
+    reason="SAM model checkpoint not available",
 )
 
 from ..processing.process_slice_sequence_v2 import process_slice_sequence_v2
@@ -18,12 +21,12 @@ def render_slice_results(image_slice, box, mask):
     rendered = image_slice.copy()
     if len(rendered.shape) == 2:
         rendered = np.stack([rendered] * 3, axis=-1)
-    
+
     # マスクをオーバーレイ（半透明の赤）
     mask_overlay = np.zeros_like(rendered)
     mask_overlay[mask] = [255, 0, 0]  # 赤色
     rendered = rendered * 0.7 + mask_overlay * 0.3
-    
+
     # boxを描画（青色）
     x1, y1, x2, y2 = box
     rendered = rendered.astype(np.uint8)
@@ -31,7 +34,7 @@ def render_slice_results(image_slice, box, mask):
     rendered[int(y2)-2:int(y2), int(x1):int(x2), :] = [0, 0, 255]  # 下辺
     rendered[int(y1):int(y2), int(x1):int(x1)+2, :] = [0, 0, 255]  # 左辺
     rendered[int(y1):int(y2), int(x2)-2:int(x2), :] = [0, 0, 255]  # 右辺
-    
+
     return rendered
 
 
@@ -40,7 +43,7 @@ def create_mock_predictor():
     class MockPredictor:
         def set_image(self, image):
             pass
-            
+
         def predict(self, box, multimask_output=False):
             # 単純な円形のマスクを生成
             h, w = 100, 100
@@ -49,7 +52,7 @@ def create_mock_predictor():
             dist_from_center = np.sqrt((X - center[0])**2 + (Y - center[1])**2)
             mask = dist_from_center <= 20
             return np.array([mask]), None, None
-            
+
     return MockPredictor()
 
 
@@ -57,31 +60,31 @@ def test_process_slice_sequence_v2_with_mock():
     """モックデータを使用した基本的な機能テスト"""
     # テスト用の3D画像を作成
     image = np.zeros((10, 100, 100))
-    
+
     # 初期boxを設定
     initial_box = np.array([40, 40, 60, 60])  # [y1, x1, y2, x2]
-    
+
     # モックpredictor
     mock_predictor = create_mock_predictor()
-    
+
     # プロセスを実行
     boxes_history, masks_history = process_slice_sequence_v2(
         image=image,
         initial_box=initial_box,
-        z_start=34,
-        z_end=38,
+        z_start=2,
+        z_end=6,
         sam_predictor=mock_predictor
     )
-    
+
     # 結果の検証
-    assert len(boxes_history) == 5  # z=34から38までの5スライス
+    assert len(boxes_history) == 5  # z=2から6までの5スライス
     assert len(masks_history) == 5
-    
+
     # 各マスクが2D配列であることを確認
     for mask in masks_history:
         assert len(mask.shape) == 2
         assert mask.dtype == bool
-    
+
     # 各boxが正しい形式であることを確認
     for box in boxes_history:
         assert len(box) == 4  # [y1, x1, y2, x2]
@@ -89,8 +92,14 @@ def test_process_slice_sequence_v2_with_mock():
         assert box[3] > box[1]  # x2 > x1
 
 
+@requires_sam_model
 def test_process_slice_sequence_v2_with_real_data():
     """実際の画像とSAMモデルを使用したテスト"""
+    import tifffile
+    import torch
+    from segment_anything import SamPredictor
+    from segment_anything import sam_model_registry as sam_registry
+
     # SAMモデルのセットアップ
     model_type = "vit_h"
     sam_checkpoint = os.path.expanduser(
@@ -202,7 +211,7 @@ def test_process_slice_sequence_v2_with_real_data():
         current_z = start_z + z_idx
         img = image[current_z]
         rendered = render_slice_results(img, box, mask)
-        
+
         # 画像を保存
         output_path = os.path.join(
             root_dir,
@@ -216,33 +225,33 @@ def test_convergence():
     """収束テスト"""
     # テスト用の3D画像を作成
     image = np.zeros((5, 100, 100))
-    
+
     class ConvergencePredictor:
         def __init__(self):
             self.call_count = 0
-            
+
         def set_image(self, image):
             pass
-            
+
         def predict(self, box, multimask_output=False):
             self.call_count += 1
             # 毎回同じマスクを返して即時収束させる
             mask = np.zeros((100, 100), dtype=bool)
             mask[40:60, 40:60] = True
             return np.array([mask]), None, None
-    
+
     predictor = ConvergencePredictor()
     initial_box = np.array([40, 40, 60, 60])
-    
+
     # プロセスを実行
     boxes_history, masks_history = process_slice_sequence_v2(
         image=image,
         initial_box=initial_box,
-        z_start=34,
-        z_end=34,  # 1スライスのみテスト
+        z_start=2,
+        z_end=2,  # 1スライスのみテスト
         sam_predictor=predictor
     )
-    
+
     # 2回目の反復で収束するはず（同じマスクを返すため）
     assert predictor.call_count == 2
 
@@ -252,7 +261,7 @@ def test_invalid_z_range():
     image = np.zeros((10, 100, 100))
     initial_box = np.array([40, 40, 60, 60])
     mock_predictor = create_mock_predictor()
-    
+
     # z_end < z_start
     with pytest.raises(ValueError):
         process_slice_sequence_v2(
@@ -262,7 +271,7 @@ def test_invalid_z_range():
             z_end=3,
             sam_predictor=mock_predictor
         )
-    
+
     # z_start < 0
     with pytest.raises(ValueError):
         process_slice_sequence_v2(
@@ -272,7 +281,7 @@ def test_invalid_z_range():
             z_end=5,
             sam_predictor=mock_predictor
         )
-    
+
     # z_end >= image.shape[0]
     with pytest.raises(ValueError):
         process_slice_sequence_v2(
