@@ -43,8 +43,9 @@ class TraceAnything(QWidget):
 
         self.vbox = QVBoxLayout()
         self._model_selection = QComboBox()
-        from segment_anything import sam_model_registry
-        self._model_selection.addItems(list(sam_model_registry.keys()))
+        self._model_selection.addItems(
+            ["default", "vit_h", "vit_l", "vit_b"]
+        )
         self.vbox.addWidget(self._model_selection)
         self._model_load_btn = QPushButton("load model")
         self._model_load_btn.clicked.connect(self._load_model)
@@ -142,14 +143,7 @@ class TraceAnything(QWidget):
         self.setLayout(self.vbox)
         self.show()
 
-        import torch
-        if torch.cuda.is_available():
-            self.device = "cuda"
-        elif torch.backends.mps.is_available():
-            self.device = "mps"
-        else:
-            self.device = "cpu"
-
+        self.device = None
         self._sam_model = None
         self.sam_predictor = None
 
@@ -246,7 +240,16 @@ class TraceAnything(QWidget):
                 )
 
     def _load_model(self):
+        import torch
         from segment_anything import SamPredictor
+
+        if self.device is None:
+            if torch.cuda.is_available():
+                self.device = "cuda"
+            elif torch.backends.mps.is_available():
+                self.device = "mps"
+            else:
+                self.device = "cpu"
 
         model_name = self._model_selection.currentText()
         self._sam_model = load_model(model_name)
