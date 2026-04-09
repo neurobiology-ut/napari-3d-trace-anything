@@ -14,13 +14,8 @@ class SAMSegmenter:
         Args:
             predictor (SamPredictor): SAMのpredictor
         """
-        from segment_anything import SamPredictor
-
-        if not (
-            isinstance(predictor, SamPredictor)
-            or (hasattr(predictor, "set_image") and hasattr(predictor, "predict"))
-        ):
-            raise ValueError("predictor must be a SamPredictor or duck-type compatible")
+        if not (hasattr(predictor, "set_image") and hasattr(predictor, "predict")):
+            raise ValueError("predictor must have set_image and predict methods")
         self.predictor = predictor
         self.current_image = None
 
