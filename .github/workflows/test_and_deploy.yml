@@ -59,7 +59,8 @@ jobs:
           run: python -m tox
         env:
           PLATFORM: ${{ matrix.platform }}
-          PIP_EXTRA_INDEX_URL: https://download.pytorch.org/whl/cpu
+          PIP_INDEX_URL: https://download.pytorch.org/whl/cpu
+          PIP_EXTRA_INDEX_URL: https://pypi.org/simple
 
       - name: Coverage
         uses: codecov/codecov-action@v4
