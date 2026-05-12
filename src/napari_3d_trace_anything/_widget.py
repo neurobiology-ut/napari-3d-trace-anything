@@ -555,7 +555,17 @@ class TraceAnything(QWidget):
                 if label_value not in self._update_values:
                     self._update_values.append(label_value)
 
-        labels = self._viewer.layers[labels_layer_name].data[prev_slice_index]
+        n_slices = self._predict_label_layer.data.shape[0]
+        if 0 <= prev_slice_index < n_slices:
+            prev_pred = self._predict_label_layer.data[prev_slice_index]
+        else:
+            prev_pred = None
+        if prev_pred is not None and np.any(prev_pred > 0):
+            labels = prev_pred
+        else:
+            labels = self._viewer.layers[
+                labels_layer_name
+            ].data[prev_slice_index]
         margin_ratio = self._trace_params["margin_ratio"]
 
         boxes_created, label_values_created = create_boxes_list(
