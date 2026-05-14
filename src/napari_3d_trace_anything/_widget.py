@@ -5,8 +5,10 @@ from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
+    QHBoxLayout,
     QInputDialog,
     QLabel,
+    QLineEdit,
     QPushButton,
     QSpinBox,
     QVBoxLayout,
@@ -19,6 +21,7 @@ from ._utils import (
     check_image_type,
     create_boxes_list,
     load_model,
+    parse_slice_range,
     preprocess,
 )
 from .processing.process_slice_sequence_v2 import optimize_segmentation
@@ -39,6 +42,9 @@ class TraceAnything(QWidget):
         self._minimum_slice = 0
         self._maximum_slice = 1
         self._worker = None
+        self._trace_params = {}
+        self._pending_accept_label = None
+        self._pending_accept_target = None
         self._layer_events_connected = False
 
         self.vbox = QVBoxLayout()
@@ -50,7 +56,7 @@ class TraceAnything(QWidget):
         self._model_load_btn = QPushButton("load model")
         self._model_load_btn.clicked.connect(self._load_model)
         self.vbox.addWidget(self._model_load_btn)
-        self.vbox.addWidget(QLabel("input image layer"))
+        self.vbox.addWidget(QLabel("Image Layer"))
         self._image_layer_selection = QComboBox()
         self._image_layer_selection.addItems(
             [
@@ -63,7 +69,7 @@ class TraceAnything(QWidget):
             self._on_image_layer_changed
         )
         self.vbox.addWidget(self._image_layer_selection)
-        self.vbox.addWidget(QLabel("output labels layer"))
+        self.vbox.addWidget(QLabel("Labels Layer"))
         self._labels_layer_selection = QComboBox()
         self._labels_layer_selection.addItems(
             [
@@ -73,39 +79,86 @@ class TraceAnything(QWidget):
             ]
         )
         self.vbox.addWidget(self._labels_layer_selection)
-        self.vbox.addWidget(QLabel("start slice"))
+        self.vbox.addWidget(QLabel("Slice Range"))
+        slice_hbox = QHBoxLayout()
         self._start_slice = QSpinBox(
-            minimum=self._minimum_slice, maximum=self._maximum_slice, value=0
+            minimum=self._minimum_slice,
+            maximum=self._maximum_slice,
+            value=0,
         )
-        self.vbox.addWidget(self._start_slice)
-        self.vbox.addWidget(QLabel("end slice"))
         self._end_slice = QSpinBox(
-            minimum=self._minimum_slice, maximum=self._maximum_slice, value=0
+            minimum=self._minimum_slice,
+            maximum=self._maximum_slice,
+            value=0,
         )
-        self.vbox.addWidget(self._end_slice)
-        # add margin ratio input (optional)
-        self.vbox.addWidget(QLabel("margin ratio (optional)"))
+        slice_hbox.addWidget(self._start_slice)
+        slice_hbox.addWidget(self._end_slice)
+        self.vbox.addLayout(slice_hbox)
+        self.vbox.addWidget(QLabel("Margin Ratio"))
         self._margin_ratio = QDoubleSpinBox()
         self._margin_ratio.setRange(-1.0, 1.0)
         self._margin_ratio.setValue(0.0)
         self._margin_ratio.setSingleStep(0.1)
         self.vbox.addWidget(self._margin_ratio)
 
-        # self-optimizationのチェックボックスを追加
-        self.vbox.addWidget(QLabel("self-optimization"))
+        box_filter_hbox = QHBoxLayout()
+        box_filter_left = QVBoxLayout()
+        box_filter_left.addWidget(QLabel("Max Objects"))
+        self._max_objects_per_label = QSpinBox()
+        self._max_objects_per_label.setRange(0, 100)
+        self._max_objects_per_label.setValue(0)
+        self._max_objects_per_label.setToolTip(
+            "Max objects per label (0 = unlimited)"
+        )
+        box_filter_left.addWidget(self._max_objects_per_label)
+        box_filter_right = QVBoxLayout()
+        box_filter_right.addWidget(QLabel("Min Area"))
+        self._min_box_area = QSpinBox()
+        self._min_box_area.setRange(0, 10000)
+        self._min_box_area.setValue(0)
+        self._min_box_area.setToolTip(
+            "Min object area for box generation (0 = no filter)"
+        )
+        box_filter_right.addWidget(self._min_box_area)
+        box_filter_hbox.addLayout(box_filter_left)
+        box_filter_hbox.addLayout(box_filter_right)
+        self.vbox.addLayout(box_filter_hbox)
+
+        self.vbox.addWidget(QLabel("Self-Optimization"))
         self._self_optimization = QCheckBox()
         self.vbox.addWidget(self._self_optimization)
 
-        # instance mode のチェックボックスを追加
-        self.vbox.addWidget(QLabel("instance mode"))
+        morphology_hbox = QHBoxLayout()
+        morphology_left = QVBoxLayout()
+        morphology_left.addWidget(QLabel("Fill Holes"))
+        self._hole_area_threshold = QSpinBox()
+        self._hole_area_threshold.setRange(0, 1000)
+        self._hole_area_threshold.setValue(0)
+        self._hole_area_threshold.setToolTip(
+            "Area threshold for filling holes (0 to disable)"
+        )
+        morphology_left.addWidget(self._hole_area_threshold)
+        morphology_right = QVBoxLayout()
+        morphology_right.addWidget(QLabel("Remove Obj"))
+        self._min_object_size = QSpinBox()
+        self._min_object_size.setRange(0, 1000)
+        self._min_object_size.setValue(0)
+        self._min_object_size.setToolTip(
+            "Size threshold for removing objects (0 to disable)"
+        )
+        morphology_right.addWidget(self._min_object_size)
+        morphology_hbox.addLayout(morphology_left)
+        morphology_hbox.addLayout(morphology_right)
+        self.vbox.addLayout(morphology_hbox)
+
+        self.vbox.addWidget(QLabel("Instance Mode"))
         self._instance_mode = QCheckBox()
         self.vbox.addWidget(self._instance_mode)
 
-        self._trace_btn = QPushButton("trace")
+        self._trace_btn = QPushButton("Trace")
         self._trace_btn.clicked.connect(self._trace)
         self.vbox.addWidget(self._trace_btn)
-        # add predict-merge layer selection
-        self.vbox.addWidget(QLabel("merged labels layer"))
+        self.vbox.addWidget(QLabel("Merged Layer"))
         self._merged_labels_layer_selection = QComboBox()
         self._merged_labels_layer_selection.addItems(
             [
@@ -115,6 +168,27 @@ class TraceAnything(QWidget):
             ]
         )
         self.vbox.addWidget(self._merged_labels_layer_selection)
+
+        self.vbox.addWidget(QLabel("Accept Range (e.g., 1-3,5)"))
+        self._slice_range_input = QLineEdit()
+        self._slice_range_input.setPlaceholderText("1-3, 5, 9-10")
+        self._slice_range_input.setToolTip(
+            "Accept only specified slices (empty = all)"
+        )
+        self.vbox.addWidget(self._slice_range_input)
+
+        buttons_hbox = QHBoxLayout()
+        self._accept_btn = QPushButton("Accept (A)")
+        self._accept_btn.clicked.connect(
+            lambda: self._accept_prediction(None)
+        )
+        buttons_hbox.addWidget(self._accept_btn)
+        self._clear_btn = QPushButton("Clear (C)")
+        self._clear_btn.clicked.connect(
+            lambda: self._clear_current_label(None)
+        )
+        buttons_hbox.addWidget(self._clear_btn)
+        self.vbox.addLayout(buttons_hbox)
 
         self._init_variables()
 
@@ -146,6 +220,7 @@ class TraceAnything(QWidget):
         self.device = None
         self._sam_model = None
         self.sam_predictor = None
+        self.sam_segmenter = None
 
         self._viewer.layers.events.inserted.connect(
             self._on_layer_list_changed
@@ -297,7 +372,9 @@ class TraceAnything(QWidget):
             opacity=0.5,
         )
 
-    def _refresh_label_comboboxes(self, image_shape, default_labels, default_merged):
+    def _refresh_label_comboboxes(
+        self, image_shape, default_labels, default_merged
+    ):
         """Repopulate label comboboxes with shape-compatible layers only."""
         compatible = [
             layer.name
@@ -336,6 +413,7 @@ class TraceAnything(QWidget):
             )
             self._start_slice.setMaximum(self._maximum_slice)
             self._end_slice.setMaximum(self._maximum_slice)
+            self._end_slice.setValue(self._maximum_slice)
 
             image_shape = self._viewer.layers[
                 layer_name
@@ -346,6 +424,9 @@ class TraceAnything(QWidget):
             self._suppress_layer_events()
 
             # Predicted-Label: recreate on shape change, clear on image switch
+            self._pending_accept_label = None
+            self._pending_accept_target = None
+
             if self._predict_label_layer is not None:
                 if self._predict_label_layer.data.shape != image_shape:
                     self._viewer.layers.remove(self._predict_label_layer)
@@ -382,10 +463,40 @@ class TraceAnything(QWidget):
                 self._stop_predicting = True
                 self._worker.send(self._stop_predicting)
             else:
-                self.delete_worker()
+                self._delete_worker()
         else:
+            # Read all UI values on main thread
+            self._trace_params = {
+                "margin_ratio": self._margin_ratio.value(),
+                "self_optimization": (
+                    self._self_optimization.isChecked()
+                ),
+                "instance_mode": (
+                    self._instance_mode.isChecked()
+                ),
+                "hole_threshold": (
+                    self._hole_area_threshold.value()
+                ),
+                "min_obj_size": (
+                    self._min_object_size.value()
+                ),
+                "max_objects": (
+                    self._max_objects_per_label.value()
+                ),
+                "min_area": self._min_box_area.value(),
+                "image_layer": (
+                    self._image_layer_selection.currentText()
+                ),
+                "labels_layer": (
+                    self._labels_layer_selection.currentText()
+                ),
+                "start_slice": self._start_slice.value(),
+                "end_slice": self._end_slice.value(),
+            }
             self._worker = create_worker(self._tracer)
-            self._worker.started.connect(lambda: print("worker is running..."))
+            self._worker.started.connect(
+                lambda: print("worker is running...")
+            )
             self._worker.finished.connect(self._delete_worker)
             self._worker.start()
             self._stop_predicting = False
@@ -394,31 +505,32 @@ class TraceAnything(QWidget):
     def _delete_worker(self):
         del self._worker
         self._worker = None
-        self._trace_btn.setText("trace")
+        self._trace_btn.setText("Trace")
 
     def _tracer(self):
         self._update_values = []
-        image = self._viewer.layers[
-            self._image_layer_selection.currentText()
-        ].data
-        labels_layer_name = self._labels_layer_selection.currentText()
+        self._pending_accept_label = None
+        self._pending_accept_target = None
+        image_layer = self._trace_params["image_layer"]
+        labels_layer_name = self._trace_params["labels_layer"]
+        start = self._trace_params["start_slice"]
+        end = self._trace_params["end_slice"]
+        image = self._viewer.layers[image_layer].data
         if not labels_layer_name:
             return
-        if self._start_slice.value() > self._end_slice.value():
-            for i in tqdm(
-                range(
-                    self._start_slice.value(), self._end_slice.value() - 1, -1
+        if start > end:
+            for i in tqdm(range(start, end - 1, -1)):
+                self._predict(
+                    image, i, labels_layer_name, i + 1
                 )
-            ):
-                self._predict(image, i, labels_layer_name, i + 1)
                 stop_predicting = yield
                 if stop_predicting:
                     break
         else:
-            for i in tqdm(
-                range(self._start_slice.value(), self._end_slice.value() + 1)
-            ):
-                self._predict(image, i, labels_layer_name, i - 1)
+            for i in tqdm(range(start, end + 1)):
+                self._predict(
+                    image, i, labels_layer_name, i - 1
+                )
                 stop_predicting = yield
                 if stop_predicting:
                     break
@@ -428,7 +540,7 @@ class TraceAnything(QWidget):
     ):
         preprocessed_image = preprocess(image, self._image_type, slice_index)
         height, width = preprocessed_image.shape[:2]
-        instance_mode = self._instance_mode.isChecked()
+        instance_mode = self._trace_params["instance_mode"]
 
         boxes = []
         label_values = []
@@ -443,12 +555,24 @@ class TraceAnything(QWidget):
                 if label_value not in self._update_values:
                     self._update_values.append(label_value)
 
-        labels = self._viewer.layers[labels_layer_name].data[prev_slice_index]
-        margin_ratio = self._margin_ratio.value()
-
-        boxes_created, label_values_created = create_boxes_list(
-            labels, margin_ratio=margin_ratio
-        )
+        margin_ratio = self._trace_params["margin_ratio"]
+        n_slices = self._predict_label_layer.data.shape[0]
+        if 0 <= prev_slice_index < n_slices:
+            prev_pred = self._predict_label_layer.data[prev_slice_index]
+            if np.any(prev_pred > 0):
+                labels = prev_pred
+            else:
+                labels = self._viewer.layers[
+                    labels_layer_name
+                ].data[prev_slice_index]
+            boxes_created, label_values_created = create_boxes_list(
+                labels,
+                margin_ratio=margin_ratio,
+                max_objects=self._trace_params["max_objects"],
+                min_area=self._trace_params["min_area"],
+            )
+        else:
+            boxes_created, label_values_created = [], []
         # 手動boxがあるラベルは自動生成boxを使わない
         manual_label_set = set(label_values)
         for box, label_value in zip(boxes_created, label_values_created):
@@ -469,6 +593,17 @@ class TraceAnything(QWidget):
             # 処理済みlabel_valueを追跡する
             current_data = layer_data[slice_index].astype(np.int32)
             cleared_labels = set()
+
+        seg_kwargs = {
+            "self_optimization": self._trace_params[
+                "self_optimization"
+            ],
+            "margin_ratio": self._trace_params["margin_ratio"],
+            "hole_threshold": self._trace_params[
+                "hole_threshold"
+            ],
+            "min_obj_size": self._trace_params["min_obj_size"],
+        }
 
         for coords, label_value in zip(boxes, label_values):
             if should_crop:
@@ -497,8 +632,13 @@ class TraceAnything(QWidget):
                     center_y = int((y1_box + y2_box) / 2)
 
                     half_size = 512
-                    x1 = max(0, min(width - 1024, center_x - half_size))
-                    y1 = max(0, min(height - 1024, center_y - half_size))
+                    x1 = max(
+                        0, min(width - 1024, center_x - half_size)
+                    )
+                    y1 = max(
+                        0,
+                        min(height - 1024, center_y - half_size),
+                    )
                     x2 = x1 + 1024
                     y2 = y1 + 1024
 
@@ -511,20 +651,25 @@ class TraceAnything(QWidget):
 
                     cropped_image = preprocessed_image[y1:y2, x1:x2]
 
-                cropped_coords = [
+                seg_image = cropped_image
+                seg_coords = [
                     x1_box - x1,
                     y1_box - y1,
                     x2_box - x1,
                     y2_box - y1,
                 ]
+            else:
+                seg_image = preprocessed_image
+                seg_coords = coords
 
-                mask = self._segment(cropped_image, cropped_coords)
+            mask = self._segment(
+                seg_image, seg_coords, **seg_kwargs
+            )
+
+            if should_crop:
                 full_mask = np.zeros((height, width), dtype=bool)
                 full_mask[y1:y2, x1:x2] = mask
                 mask = full_mask
-
-            else:
-                mask = self._segment(preprocessed_image, coords)
 
             if instance_mode:
                 # 同じlabel_valueの初回処理時のみ古いピクセルをクリア
@@ -533,9 +678,9 @@ class TraceAnything(QWidget):
                     cleared_labels.add(label_value)
                 current_data[mask] = label_value
             else:
-                layer_data[slice_index] = (
-                    layer_data[slice_index] + mask * 1
-                )
+                slice_data = layer_data[slice_index]
+                slice_data[mask] = 1
+                layer_data[slice_index] = slice_data
 
         if instance_mode:
             layer_data[slice_index] = current_data
@@ -543,25 +688,47 @@ class TraceAnything(QWidget):
         self._predict_label_layer.data = layer_data
         self._predict_label_layer.refresh()
 
-    def _segment(self, image, coords):
-        """Run segmentation with optional self-optimization."""
-        if self._self_optimization.isChecked():
+    def _segment(
+        self,
+        image,
+        coords,
+        self_optimization=False,
+        margin_ratio=0.0,
+        hole_threshold=0,
+        min_obj_size=0,
+    ):
+        """Run segmentation with optional self-optimization
+        and morphological post-processing."""
+        from skimage.morphology import (
+            remove_small_holes,
+            remove_small_objects,
+        )
+
+        if self_optimization:
             _, mask = optimize_segmentation(
                 image,
                 coords,
                 self.sam_segmenter,
-                self._margin_ratio.value(),
+                margin_ratio,
             )
         else:
             mask = self.sam_segmenter.segment(image, coords)
+
+        if hole_threshold > 0:
+            mask = remove_small_holes(
+                mask.astype(bool),
+                area_threshold=hole_threshold,
+            )
+        if min_obj_size > 0:
+            mask = remove_small_objects(
+                mask.astype(bool), min_size=min_obj_size
+            )
         return mask
 
     def _accept_prediction(self, layer):
         if self._predict_label_layer is None:
             return
-        if (
-            self._merged_labels_layer_selection.currentText() == ""
-        ):
+        if self._merged_labels_layer_selection.currentText() == "":
             return
 
         output_layer = self._viewer.layers[
@@ -569,19 +736,73 @@ class TraceAnything(QWidget):
         ]
         predict_data = self._predict_label_layer.data
 
-        transfer_mask = (predict_data > 0) & (output_layer.data == 0)
-        if self._instance_mode.isChecked():
-            output_layer.data[transfer_mask] = predict_data[
-                transfer_mask
-            ]
+        # Accept Range
+        range_str = self._slice_range_input.text().strip()
+        if range_str:
+            try:
+                target_slices = parse_slice_range(range_str)
+                max_slice = predict_data.shape[0] - 1
+                invalid = [
+                    s for s in target_slices
+                    if s < 0 or s > max_slice
+                ]
+                if invalid:
+                    print(f"Invalid slice numbers: {invalid}")
+                    return
+                if not target_slices:
+                    print("No valid slices in range")
+                    return
+            except ValueError as e:
+                print(f"Error parsing range: {e}")
+                return
         else:
-            max_label = int(np.max(output_layer.data))
-            output_layer.data[transfer_mask] = max_label + 1
+            target_slices = list(range(predict_data.shape[0]))
+
+        instance_mode = self._instance_mode.isChecked()
+        merged_name = (
+            self._merged_labels_layer_selection.currentText()
+        )
+        if not instance_mode:
+            # Reuse label from previous partial accept of the
+            # same prediction into the same layer
+            if (
+                self._pending_accept_label is None
+                or self._pending_accept_target != merged_name
+            ):
+                self._pending_accept_label = (
+                    int(np.max(output_layer.data)) + 1
+                )
+                self._pending_accept_target = merged_name
+            new_label = self._pending_accept_label
+
+        for s in target_slices:
+            pred_s = predict_data[s]
+            out_s = output_layer.data[s]
+            transfer = (pred_s > 0) & (out_s == 0)
+            if not np.any(transfer):
+                continue
+            if instance_mode:
+                out_s[transfer] = pred_s[transfer]
+            else:
+                out_s[transfer] = new_label
+            output_layer.data[s] = out_s
 
         output_layer.refresh()
-        self._predict_label_layer.data = np.zeros_like(
-            predict_data
-        )
+
+        # Clear only accepted slices when range specified
+        if range_str:
+            for s in target_slices:
+                self._predict_label_layer.data[s] = 0
+        else:
+            self._predict_label_layer.data = np.zeros_like(
+                predict_data
+            )
+
+        # Reset pending label when prediction layer is fully clear
+        if not np.any(self._predict_label_layer.data > 0):
+            self._pending_accept_label = None
+            self._pending_accept_target = None
+
         self._predict_label_layer.refresh()
 
     def lock_controls(self, layer, locked=True):
