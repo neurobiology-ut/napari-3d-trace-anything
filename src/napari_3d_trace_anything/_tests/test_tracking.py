@@ -36,8 +36,21 @@ def test_compute_poc_displacement_no_movement():
 def test_compute_poc_displacement_with_shift():
     img1 = _checker_image()
     img2 = _checker_image(shift_x=5)
-    dx, _dy, distance = compute_poc_displacement(img1, img2)
-    assert abs(dx) > 0 or distance > 1.0
+    dx, dy, distance = compute_poc_displacement(img1, img2)
+    # img2 = img1 shifted by +5 in x; sign matches cv2.phaseCorrelate / ECC.
+    assert dx == 5
+    assert dy == 0
+    assert distance >= 5.0
+
+
+def test_compute_poc_displacement_sign_matches_ecc():
+    img1 = _checker_image()
+    img2 = _checker_image(shift_x=3, shift_y=2)
+    poc_dx, poc_dy, _ = compute_poc_displacement(img1, img2)
+    ecc_dx, ecc_dy, _, _ = compute_ecc_displacement(img1, img2)
+    # Both methods should report displacement in the same direction.
+    assert np.sign(poc_dx) == np.sign(ecc_dx)
+    assert np.sign(poc_dy) == np.sign(ecc_dy)
 
 
 def test_compute_ecc_displacement_identical_images():
@@ -73,6 +86,16 @@ def test_extract_roi_around_box_clamps_at_corner():
     # Clamped to image bounds: x1=0, y1=0, x2=50, y2=50.
     assert coords == (0, 0, 50, 50)
     assert roi.shape == (50, 50)
+
+
+def test_extract_roi_around_box_accepts_float_bbox():
+    """napari Shapes layer reports float coordinates; bbox must be int-cast."""
+    image = np.zeros((100, 100), dtype=np.uint8)
+    bbox = [40.0, 40.0, 20.0, 20.0]
+    roi, coords = extract_roi_around_box(image, bbox, scale=2.0)
+    assert roi is not None
+    assert coords is not None
+    assert all(isinstance(v, int) for v in coords)
 
 
 def test_check_frame_movement_below_threshold():
@@ -125,3 +148,26 @@ def test_compute_roi_for_segmentation_asymmetric_image():
     assert (y1, y2) == (0, 800)
     assert x2 - x1 == 1024
     assert x1 <= 1500 and x2 >= 1550
+
+
+def test_compute_roi_for_segmentation_boxes_span_exceeds_max_size():
+    """When the box union spans more than max_size, refuse to crop so the
+    caller can send the full image instead of an over-sized ROI."""
+    needs_crop, *rest = compute_roi_for_segmentation(
+        (5000, 5000),
+        [[100, 100, 50, 50], [4000, 4000, 50, 50]],
+        max_size=1024,
+    )
+    assert needs_crop is False
+    assert rest == [None, None, None, None]
+
+
+def test_compute_roi_for_segmentation_roi_stays_within_max_size():
+    needs_crop, x1, y1, x2, y2 = compute_roi_for_segmentation(
+        (5000, 5000),
+        [[100, 100, 50, 50], [900, 900, 50, 50]],
+        max_size=1024,
+    )
+    assert needs_crop is True
+    assert x2 - x1 <= 1024
+    assert y2 - y1 <= 1024

@@ -36,6 +36,9 @@ def _ensure_gray(image):
 def compute_poc_displacement(img1, img2):
     """Phase-Only Correlation displacement between two images.
 
+    Sign convention matches cv2.phaseCorrelate and compute_ecc_displacement:
+    if img2 is img1 shifted by (+dx, +dy), this returns (+dx, +dy).
+
     Returns:
         (dx, dy, distance)
     """
@@ -58,7 +61,8 @@ def compute_poc_displacement(img1, img2):
     f1 = np.fft.fft2(img1_w)
     f2 = np.fft.fft2(img2_w)
 
-    cross_power = f1 * np.conj(f2)
+    # F2 * conj(F1) yields a peak at +shift when img2 = shift(img1).
+    cross_power = f2 * np.conj(f1)
     cross_power_norm = cross_power / (np.abs(cross_power) + 1e-10)
 
     poc = np.fft.ifft2(cross_power_norm)
@@ -170,11 +174,14 @@ def compute_tracker_displacement(ref_image, target_image, bbox_xywh):
 def extract_roi_around_box(image, bbox_xywh, scale=4.0):
     """Extract a scaled ROI centered on the bounding box.
 
+    napari Shapes coordinates are float; bbox is int-cast here so that
+    slicing succeeds for inputs like [40.0, 40.0, 20.0, 20.0].
+
     Returns:
         (roi_image, (x1, y1, x2, y2)) or (None, None) if invalid.
     """
     img_h, img_w = image.shape[:2]
-    x, y, w, h = bbox_xywh
+    x, y, w, h = (int(v) for v in bbox_xywh)
     cx = x + w // 2
     cy = y + h // 2
     roi_w = int(w * scale)
@@ -240,6 +247,11 @@ def compute_roi_for_segmentation(image_shape, boxes_xywh, max_size=1024):
 
     Returns:
         (needs_crop, x1, y1, x2, y2). If needs_crop is False, others are None.
+
+    Returns needs_crop=False when no cropping is possible while honoring
+    max_size: either the image already fits, or the union of input boxes
+    spans more than max_size in some dimension (caller should send the
+    full image rather than a partial crop).
     """
     img_h, img_w = image_shape[:2]
     if img_w <= max_size and img_h <= max_size:
@@ -257,6 +269,9 @@ def compute_roi_for_segmentation(image_shape, boxes_xywh, max_size=1024):
     box_y1 = min(all_y1)
     box_x2 = max(all_x2)
     box_y2 = max(all_y2)
+
+    if (box_x2 - box_x1) > max_size or (box_y2 - box_y1) > max_size:
+        return False, None, None, None, None
 
     center_x = (box_x1 + box_x2) // 2
     center_y = (box_y1 + box_y2) // 2
@@ -286,16 +301,5 @@ def compute_roi_for_segmentation(image_shape, boxes_xywh, max_size=1024):
     roi_y1 = max(0, roi_y1)
     roi_x2 = min(img_w, roi_x2)
     roi_y2 = min(img_h, roi_y2)
-
-    if (
-        box_x1 < roi_x1
-        or box_x2 > roi_x2
-        or box_y1 < roi_y1
-        or box_y2 > roi_y2
-    ):
-        roi_x1 = max(0, min(roi_x1, box_x1))
-        roi_y1 = max(0, min(roi_y1, box_y1))
-        roi_x2 = min(img_w, max(roi_x2, box_x2))
-        roi_y2 = min(img_h, max(roi_y2, box_y2))
 
     return True, int(roi_x1), int(roi_y1), int(roi_x2), int(roi_y2)
