@@ -37,6 +37,7 @@ dependencies = [
     "tqdm",
     "scikit-image",
     "opencv-python>=4.9.0",
+    "requests",
 ]
 
 [project.urls]

@@ -188,6 +188,35 @@ def segment_with_sam(predictor, image, box):
     return masks[0]
 
 
+_sam_model_cache = {}
+
+
+def get_sam_model(model_name, device=None):
+    """Return a cached SAM model so multiple widgets share the same weights.
+
+    The expensive part of loading SAM is the ~2.5 GB of weights (for
+    vit_h); SamPredictor itself is cheap. Caching the *model* lets two
+    widgets each instantiate their own predictor via
+    ``SamPredictor(get_sam_model(name))`` without paying the load cost
+    twice or duplicating the weights in VRAM. Predictors are NOT shared
+    because ``set_image`` state lives on the predictor and would clash.
+
+    Args:
+        model_name (str): vit_h / vit_l / vit_b / default.
+        device: Optional torch device to move the model to. ``.to`` is
+            cheap when the model is already on the target device.
+
+    Returns:
+        segment_anything.modeling.sam.Sam
+    """
+    if model_name not in _sam_model_cache:
+        _sam_model_cache[model_name] = load_model(model_name)
+    sam = _sam_model_cache[model_name]
+    if device is not None:
+        sam.to(device=device)
+    return sam
+
+
 def load_model(model_name):
     """Load model
 
