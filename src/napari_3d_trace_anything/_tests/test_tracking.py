@@ -151,18 +151,25 @@ def test_compute_roi_for_segmentation_asymmetric_image():
 
 
 def test_compute_roi_for_segmentation_boxes_span_exceeds_max_size():
-    """When the box union spans more than max_size, refuse to crop so the
-    caller can send the full image instead of an over-sized ROI."""
-    needs_crop, *rest = compute_roi_for_segmentation(
-        (5000, 5000),
+    """When the box union spans more than max_size, the ROI expands to
+    contain every box rather than falling back to the full image: a crop
+    strictly smaller than the source is still a win."""
+    img_h, img_w = 5000, 5000
+    needs_crop, x1, y1, x2, y2 = compute_roi_for_segmentation(
+        (img_h, img_w),
         [[100, 100, 50, 50], [4000, 4000, 50, 50]],
         max_size=1024,
     )
-    assert needs_crop is False
-    assert rest == [None, None, None, None]
+    assert needs_crop is True
+    # ROI contains every input box.
+    assert x1 <= 100 and x2 >= 4050
+    assert y1 <= 100 and y2 >= 4050
+    # And is strictly smaller than the full image.
+    assert (x2 - x1, y2 - y1) != (img_w, img_h)
 
 
 def test_compute_roi_for_segmentation_roi_stays_within_max_size():
+    """When the box union fits inside max_size, the ROI is capped at it."""
     needs_crop, x1, y1, x2, y2 = compute_roi_for_segmentation(
         (5000, 5000),
         [[100, 100, 50, 50], [900, 900, 50, 50]],

@@ -243,15 +243,17 @@ def check_frame_movement(
 
 
 def compute_roi_for_segmentation(image_shape, boxes_xywh, max_size=1024):
-    """Compute an inclusive crop region covering all boxes within max_size.
+    """Compute a crop region that contains every input box.
+
+    The ROI targets ``max_size`` in each dimension to keep payloads small,
+    but is expanded to fit all boxes when their union spans more than
+    ``max_size``; in that case the ROI may grow up to the image size, and
+    a crop strictly smaller than the full image is preferred over sending
+    everything to the segmentation server.
 
     Returns:
-        (needs_crop, x1, y1, x2, y2). If needs_crop is False, others are None.
-
-    Returns needs_crop=False when no cropping is possible while honoring
-    max_size: either the image already fits, or the union of input boxes
-    spans more than max_size in some dimension (caller should send the
-    full image rather than a partial crop).
+        (needs_crop, x1, y1, x2, y2). When the image already fits in
+        ``max_size``, returns (False, None, None, None, None).
     """
     img_h, img_w = image_shape[:2]
     if img_w <= max_size and img_h <= max_size:
@@ -269,9 +271,6 @@ def compute_roi_for_segmentation(image_shape, boxes_xywh, max_size=1024):
     box_y1 = min(all_y1)
     box_x2 = max(all_x2)
     box_y2 = max(all_y2)
-
-    if (box_x2 - box_x1) > max_size or (box_y2 - box_y1) > max_size:
-        return False, None, None, None, None
 
     center_x = (box_x1 + box_x2) // 2
     center_y = (box_y1 + box_y2) // 2
@@ -301,5 +300,18 @@ def compute_roi_for_segmentation(image_shape, boxes_xywh, max_size=1024):
     roi_y1 = max(0, roi_y1)
     roi_x2 = min(img_w, roi_x2)
     roi_y2 = min(img_h, roi_y2)
+
+    # Boxes whose union spans more than max_size cannot fit in a
+    # max_size ROI; expand to contain them (still bounded by the image).
+    if (
+        box_x1 < roi_x1
+        or box_x2 > roi_x2
+        or box_y1 < roi_y1
+        or box_y2 > roi_y2
+    ):
+        roi_x1 = max(0, min(roi_x1, box_x1))
+        roi_y1 = max(0, min(roi_y1, box_y1))
+        roi_x2 = min(img_w, max(roi_x2, box_x2))
+        roi_y2 = min(img_h, max(roi_y2, box_y2))
 
     return True, int(roi_x1), int(roi_y1), int(roi_x2), int(roi_y2)
