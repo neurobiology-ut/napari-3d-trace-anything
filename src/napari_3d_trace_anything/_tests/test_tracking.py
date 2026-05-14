@@ -1,5 +1,6 @@
 import cv2
 import numpy as np
+import pytest
 
 from napari_3d_trace_anything.tracking import (
     check_frame_movement,
@@ -178,3 +179,51 @@ def test_compute_roi_for_segmentation_roi_stays_within_max_size():
     assert needs_crop is True
     assert x2 - x1 <= 1024
     assert y2 - y1 <= 1024
+
+
+def test_compute_roi_for_segmentation_empty_boxes_returns_false():
+    """min()/max() on empty input would raise; guard returns False instead."""
+    needs_crop, *rest = compute_roi_for_segmentation(
+        (5000, 5000), [], max_size=1024
+    )
+    assert needs_crop is False
+    assert rest == [None, None, None, None]
+
+
+def test_compute_roi_for_segmentation_float_box_not_truncated():
+    """Float bbox upper bounds must be rounded up so the ROI covers them."""
+    needs_crop, x1, y1, x2, y2 = compute_roi_for_segmentation(
+        (5000, 5000),
+        [[100.7, 100.2, 50.4, 50.9]],
+        max_size=1024,
+    )
+    assert needs_crop is True
+    # Upper bounds: ceil(100.7 + 50.4) = 152, ceil(100.2 + 50.9) = 152
+    assert x2 >= 152
+    assert y2 >= 152
+
+
+def test_compute_akaze_displacement_accepts_float_image():
+    """Float images must be normalized to uint8 inside AKAZE instead of
+    raising cv2.error."""
+    rng = np.random.default_rng(42)
+    img1 = rng.random((100, 100)).astype(np.float64)
+    img2 = rng.random((100, 100)).astype(np.float64)
+    # Should not raise; precise dx/dy is irrelevant.
+    _dx, _dy, distance = compute_akaze_displacement(img1, img2)
+    assert distance >= 0 or distance == float("inf")
+
+
+def test_compute_poc_displacement_textureless_input():
+    """All-zero frames must not produce a spurious (-w/2, -h/2) reading."""
+    blank = np.zeros((100, 100), dtype=np.uint8)
+    dx, dy, distance = compute_poc_displacement(blank, blank.copy())
+    assert (dx, dy, distance) == (0, 0, 0.0)
+
+
+def test_check_frame_movement_rejects_unknown_method():
+    img = _checker_image()
+    with pytest.raises(ValueError, match="unknown method"):
+        check_frame_movement(
+            img, img.copy(), [40, 40, 20, 20], threshold=10.0, method="pco"
+        )

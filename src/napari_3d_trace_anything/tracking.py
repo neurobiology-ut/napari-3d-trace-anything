@@ -1,12 +1,14 @@
 # Adapted from napari-gc-analysis (Apache-2.0)
 # https://github.com/neurobiology-ut/napari-gc-analysis
 
+import math
 from importlib.resources import as_file, files
 
 import cv2
 import numpy as np
 
 VIT_TRACKER_MODEL = "model/vit/object_tracking_vittrack_2023sep.onnx"
+SUPPORTED_MOVEMENT_METHODS = ("ecc", "poc", "akaze", "tracker")
 
 
 def _resolve_vit_model_path():
@@ -33,17 +35,38 @@ def _ensure_gray(image):
     return image
 
 
+def _to_uint8_gray(image):
+    """Normalize an image to 8-bit single-channel for cv2 detectors.
+
+    napari image layers are commonly float; AKAZE / medianBlur require
+    CV_8U with arbitrary channel counts.
+    """
+    image = _ensure_gray(image)
+    if image.dtype == np.uint8:
+        return image
+    img = image.astype(np.float64)
+    max_val = float(img.max()) if img.size else 0.0
+    if max_val <= 0 or not np.isfinite(max_val):
+        return np.zeros(img.shape, dtype=np.uint8)
+    return np.clip(img / max_val * 255.0, 0, 255).astype(np.uint8)
+
+
 def compute_poc_displacement(img1, img2):
     """Phase-Only Correlation displacement between two images.
 
     Sign convention matches cv2.phaseCorrelate and compute_ecc_displacement:
     if img2 is img1 shifted by (+dx, +dy), this returns (+dx, +dy).
 
+    For textureless / constant inputs (e.g. all-zero frames) the
+    correlation response stays near zero everywhere and argmax would
+    spuriously pick the (0, 0) corner; this is guarded by checking the
+    peak height and returning (0, 0, 0) instead.
+
     Returns:
         (dx, dy, distance)
     """
-    img1 = _ensure_gray(img1)
-    img2 = _ensure_gray(img2)
+    img1 = _to_uint8_gray(img1)
+    img2 = _to_uint8_gray(img2)
 
     img1 = cv2.medianBlur(img1, 5)
     img2 = cv2.medianBlur(img2, 5)
@@ -67,6 +90,11 @@ def compute_poc_displacement(img1, img2):
 
     poc = np.fft.ifft2(cross_power_norm)
     poc = np.abs(np.fft.fftshift(poc))
+
+    # Textureless inputs leave the correlation surface near zero; report
+    # no movement rather than the spurious (0, 0) corner pick.
+    if not np.isfinite(poc).all() or poc.max() < 1e-6:
+        return 0, 0, 0.0
 
     peak_idx = np.unravel_index(np.argmax(poc), poc.shape)
     dy = peak_idx[0] - h // 2
@@ -108,11 +136,14 @@ def compute_ecc_displacement(img1, img2):
 def compute_akaze_displacement(img1, img2):
     """AKAZE feature-matching displacement (median over top matches).
 
+    AKAZE requires 8-bit input; float / uint16 images are normalized
+    so float napari layers don't raise cv2.error.
+
     Returns:
         (dx, dy, distance). On insufficient matches: (0, 0, inf).
     """
-    img1 = _ensure_gray(img1)
-    img2 = _ensure_gray(img2)
+    img1 = _to_uint8_gray(img1)
+    img2 = _to_uint8_gray(img2)
 
     akaze = cv2.AKAZE_create()
     kp1, desc1 = akaze.detectAndCompute(img1, None)
@@ -211,7 +242,16 @@ def check_frame_movement(
     Returns:
         (exceeds, distance, dx, dy, new_bbox_xywh)
         new_bbox_xywh is non-None only for method='tracker' on success.
+
+    Raises:
+        ValueError: if ``method`` is not one of SUPPORTED_MOVEMENT_METHODS.
     """
+    if method not in SUPPORTED_MOVEMENT_METHODS:
+        raise ValueError(
+            f"unknown method {method!r}; "
+            f"expected one of {SUPPORTED_MOVEMENT_METHODS}"
+        )
+
     if method == "tracker":
         dx, dy, distance, new_bbox = compute_tracker_displacement(
             ref_image, target_image, bbox_xywh
@@ -253,19 +293,24 @@ def compute_roi_for_segmentation(image_shape, boxes_xywh, max_size=1024):
 
     Returns:
         (needs_crop, x1, y1, x2, y2). When the image already fits in
-        ``max_size``, returns (False, None, None, None, None).
+        ``max_size`` or no boxes are supplied, returns
+        (False, None, None, None, None).
     """
     img_h, img_w = image_shape[:2]
     if img_w <= max_size and img_h <= max_size:
         return False, None, None, None, None
+    if not boxes_xywh:
+        return False, None, None, None, None
 
+    # Floor lower bounds and ceil upper bounds so that float coordinates
+    # never shrink the union below the actual box extent.
     all_x1, all_y1, all_x2, all_y2 = [], [], [], []
     for box in boxes_xywh:
-        x, y, w, h = map(int, box)
-        all_x1.append(x)
-        all_y1.append(y)
-        all_x2.append(x + w)
-        all_y2.append(y + h)
+        x, y, w, h = box
+        all_x1.append(math.floor(x))
+        all_y1.append(math.floor(y))
+        all_x2.append(math.ceil(x + w))
+        all_y2.append(math.ceil(y + h))
 
     box_x1 = min(all_x1)
     box_y1 = min(all_y1)
