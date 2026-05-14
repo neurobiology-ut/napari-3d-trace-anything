@@ -135,7 +135,7 @@ class TraceAnything(QWidget):
         self._hole_area_threshold.setRange(0, 1000)
         self._hole_area_threshold.setValue(0)
         self._hole_area_threshold.setToolTip(
-            "Fill holes <= this area (0 to disable)"
+            "Area threshold for filling holes (0 to disable)"
         )
         morphology_left.addWidget(self._hole_area_threshold)
         morphology_right = QVBoxLayout()
@@ -144,7 +144,7 @@ class TraceAnything(QWidget):
         self._min_object_size.setRange(0, 1000)
         self._min_object_size.setValue(0)
         self._min_object_size.setToolTip(
-            "Remove objects <= this size (0 to disable)"
+            "Size threshold for removing objects (0 to disable)"
         )
         morphology_right.addWidget(self._min_object_size)
         morphology_hbox.addLayout(morphology_left)
@@ -555,25 +555,24 @@ class TraceAnything(QWidget):
                 if label_value not in self._update_values:
                     self._update_values.append(label_value)
 
+        margin_ratio = self._trace_params["margin_ratio"]
         n_slices = self._predict_label_layer.data.shape[0]
         if 0 <= prev_slice_index < n_slices:
             prev_pred = self._predict_label_layer.data[prev_slice_index]
+            if np.any(prev_pred > 0):
+                labels = prev_pred
+            else:
+                labels = self._viewer.layers[
+                    labels_layer_name
+                ].data[prev_slice_index]
+            boxes_created, label_values_created = create_boxes_list(
+                labels,
+                margin_ratio=margin_ratio,
+                max_objects=self._trace_params["max_objects"],
+                min_area=self._trace_params["min_area"],
+            )
         else:
-            prev_pred = None
-        if prev_pred is not None and np.any(prev_pred > 0):
-            labels = prev_pred
-        else:
-            labels = self._viewer.layers[
-                labels_layer_name
-            ].data[prev_slice_index]
-        margin_ratio = self._trace_params["margin_ratio"]
-
-        boxes_created, label_values_created = create_boxes_list(
-            labels,
-            margin_ratio=margin_ratio,
-            max_objects=self._trace_params["max_objects"],
-            min_area=self._trace_params["min_area"],
-        )
+            boxes_created, label_values_created = [], []
         # 手動boxがあるラベルは自動生成boxを使わない
         manual_label_set = set(label_values)
         for box, label_value in zip(boxes_created, label_values_created):
@@ -679,9 +678,9 @@ class TraceAnything(QWidget):
                     cleared_labels.add(label_value)
                 current_data[mask] = label_value
             else:
-                layer_data[slice_index] = (
-                    layer_data[slice_index] + mask * 1
-                )
+                slice_data = layer_data[slice_index]
+                slice_data[mask] = 1
+                layer_data[slice_index] = slice_data
 
         if instance_mode:
             layer_data[slice_index] = current_data
