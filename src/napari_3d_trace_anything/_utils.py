@@ -188,6 +188,10 @@ def segment_with_sam(predictor, image, box):
     return masks[0]
 
 
+# Mapping of model_name -> (sam_model, device_str_or_None).
+# Device is tracked alongside the weights so a second caller that asks
+# for a different device doesn't silently migrate the shared model and
+# break the first caller's predictor mid-segmentation.
 _sam_model_cache = {}
 
 
@@ -208,12 +212,31 @@ def get_sam_model(model_name, device=None):
 
     Returns:
         segment_anything.modeling.sam.Sam
+
+    Raises:
+        RuntimeError: if the cached model is already on a different
+            device than the one requested. Moving it would silently
+            break any predictor still referencing the cached weights.
     """
+    requested = str(device) if device is not None else None
     if model_name not in _sam_model_cache:
-        _sam_model_cache[model_name] = load_model(model_name)
-    sam = _sam_model_cache[model_name]
-    if device is not None:
-        sam.to(device=device)
+        sam = load_model(model_name)
+        if requested is not None:
+            sam.to(device=requested)
+        _sam_model_cache[model_name] = (sam, requested)
+        return sam
+
+    sam, cached_device = _sam_model_cache[model_name]
+    if requested is not None and cached_device is None:
+        sam.to(device=requested)
+        _sam_model_cache[model_name] = (sam, requested)
+    elif requested is not None and requested != cached_device:
+        raise RuntimeError(
+            f"SAM model {model_name!r} is already loaded on "
+            f"{cached_device!r}; cannot return it on {requested!r} "
+            "without invalidating predictors that still reference the "
+            "cached weights. Use a single device process-wide."
+        )
     return sam
 
 

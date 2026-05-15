@@ -249,3 +249,89 @@ def test_get_sam_model_moves_to_device(monkeypatch):
 
     sam = _utils.get_sam_model("vit_h", device="cpu")
     assert sam.device == "cpu"
+
+
+def test_get_sam_model_rejects_device_conflict(monkeypatch):
+    """Asking for the same model on a different device must raise rather
+    than silently migrating the cached weights and breaking the earlier
+    predictor."""
+    monkeypatch.setattr(_utils, "_sam_model_cache", {})
+
+    class _FakeSAM:
+        def __init__(self):
+            self.device = None
+
+        def to(self, device):
+            self.device = device
+            return self
+
+    monkeypatch.setattr(_utils, "load_model", lambda name: _FakeSAM())
+
+    _utils.get_sam_model("vit_h", device="cuda")
+    # Same device: fine.
+    _utils.get_sam_model("vit_h", device="cuda")
+    # No device specified: returns the cached instance without moving.
+    _utils.get_sam_model("vit_h")
+    # Different device: refuses to migrate.
+    with pytest.raises(RuntimeError, match="already loaded on"):
+        _utils.get_sam_model("vit_h", device="cpu")
+
+
+def test_get_sam_model_late_device_assignment(monkeypatch):
+    """A first caller without device, then a second with one, should
+    move the cached weights (no predictor in flight yet) and remember
+    that device for the conflict check."""
+    monkeypatch.setattr(_utils, "_sam_model_cache", {})
+
+    class _FakeSAM:
+        def __init__(self):
+            self.device = None
+
+        def to(self, device):
+            self.device = device
+            return self
+
+    monkeypatch.setattr(_utils, "load_model", lambda name: _FakeSAM())
+
+    sam = _utils.get_sam_model("vit_h")
+    assert sam.device is None
+    _utils.get_sam_model("vit_h", device="cpu")
+    assert sam.device == "cpu"
+    with pytest.raises(RuntimeError):
+        _utils.get_sam_model("vit_h", device="cuda")
+
+
+def test_remote_backend_default_timeout_passed_to_session():
+    expected_mask = np.ones((10, 10), dtype=np.uint8)
+    session = _make_session_returning_mask(expected_mask)
+    backend = RemoteSAMBackend(url="http://stub", session=session)
+    backend.prepare(np.zeros((10, 10), dtype=np.uint8), image_id=0)
+    backend.segment(np.array([0, 0, 5, 5]))
+
+    timeout = session.post.call_args.kwargs.get("timeout")
+    assert timeout == RemoteSAMBackend.DEFAULT_TIMEOUT_SECONDS
+
+
+def test_remote_backend_custom_timeout_passed_to_session():
+    expected_mask = np.ones((10, 10), dtype=np.uint8)
+    session = _make_session_returning_mask(expected_mask)
+    backend = RemoteSAMBackend(
+        url="http://stub", session=session, timeout=5.0
+    )
+    backend.prepare(np.zeros((10, 10), dtype=np.uint8), image_id=0)
+    backend.segment(np.array([0, 0, 5, 5]))
+
+    assert session.post.call_args.kwargs["timeout"] == 5.0
+
+
+def test_remote_backend_timeout_none_disables_it():
+    """Passing None must propagate so callers can opt out of the bound."""
+    expected_mask = np.ones((10, 10), dtype=np.uint8)
+    session = _make_session_returning_mask(expected_mask)
+    backend = RemoteSAMBackend(
+        url="http://stub", session=session, timeout=None
+    )
+    backend.prepare(np.zeros((10, 10), dtype=np.uint8), image_id=0)
+    backend.segment(np.array([0, 0, 5, 5]))
+
+    assert session.post.call_args.kwargs["timeout"] is None

@@ -82,13 +82,32 @@ class RemoteSAMBackend:
     Wire format matches napari-gc-analysis's server: uint8 image is
     pickled into a multipart file under ``numpy_data``, box coordinates
     travel as JSON, response body is a pickled boolean mask.
+
+    Security note: the response is deserialized with ``pickle.loads``,
+    which executes arbitrary Python on a malicious payload. **Only point
+    this backend at SAM servers you control or trust.** Switching the
+    wire format to a safer encoding (e.g. ``np.save``) would break
+    compatibility with the existing gc-analysis server; until that is
+    coordinated, treat the URL as a trust boundary.
     """
 
-    def __init__(self, url: str, model: str = "sam", session=None):
+    DEFAULT_TIMEOUT_SECONDS = 60.0
+
+    def __init__(
+        self,
+        url: str,
+        model: str = "sam",
+        session=None,
+        timeout: Optional[float] = DEFAULT_TIMEOUT_SECONDS,
+    ):
         if not url:
             raise ValueError("RemoteSAMBackend requires a non-empty url")
         self.url = url
         self.model = model
+        # Bounded by default so a stalled server doesn't freeze napari.
+        # ``None`` disables the timeout for callers who explicitly want
+        # to wait forever.
+        self.timeout = timeout
         # Session is injectable so tests can stub network IO without
         # monkey-patching the module-level ``requests.post``.
         self._session = session if session is not None else requests.Session()
@@ -111,6 +130,7 @@ class RemoteSAMBackend:
             self.url,
             files={"numpy_data": io.BytesIO(pickle_data)},
             data={"coords": coords_json, "model": self.model},
+            timeout=self.timeout,
         )
         response.raise_for_status()
         content_type = response.headers.get("Content-Type", "")
@@ -118,5 +138,6 @@ class RemoteSAMBackend:
             raise RuntimeError(
                 f"server returned non-pickle Content-Type: {content_type!r}"
             )
+        # See class docstring: this trusts the configured SAM server URL.
         mask = pickle.loads(response.content)
         return np.asarray(mask).astype(bool)
