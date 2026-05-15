@@ -2,12 +2,14 @@ import cv2
 import numpy as np
 import pytest
 
+from napari_3d_trace_anything import tracking
 from napari_3d_trace_anything.tracking import (
     check_frame_movement,
     compute_akaze_displacement,
     compute_ecc_displacement,
     compute_poc_displacement,
     compute_roi_for_segmentation,
+    compute_tracker_displacement,
     extract_roi_around_box,
     get_vit_tracker,
 )
@@ -227,3 +229,71 @@ def test_check_frame_movement_rejects_unknown_method():
         check_frame_movement(
             img, img.copy(), [40, 40, 20, 20], threshold=10.0, method="pco"
         )
+
+
+# ---------------- Tracker injection (PR#9 review L491) ----------------
+
+
+def test_compute_tracker_displacement_uses_injected_tracker(monkeypatch):
+    """Passing a tracker must skip the get_vit_tracker() call.
+
+    Reading the ONNX from disk is the dominant cost; reusing one tracker
+    across many frames is the whole point of the injection.
+    """
+    call_count = {"n": 0}
+
+    def fake_get_vit_tracker():
+        call_count["n"] += 1
+        return get_vit_tracker()
+
+    monkeypatch.setattr(tracking, "get_vit_tracker", fake_get_vit_tracker)
+
+    img = np.zeros((100, 100, 3), dtype=np.uint8)
+    tracker = get_vit_tracker()  # one call to construct outside the spy
+    call_count["n"] = 0  # reset
+    compute_tracker_displacement(
+        img, img.copy(), [10, 10, 20, 20], tracker=tracker
+    )
+    compute_tracker_displacement(
+        img, img.copy(), [10, 10, 20, 20], tracker=tracker
+    )
+    assert call_count["n"] == 0
+
+
+def test_compute_tracker_displacement_creates_tracker_when_none(monkeypatch):
+    """Default behavior unchanged: None tracker → get_vit_tracker() once."""
+    call_count = {"n": 0}
+    real = get_vit_tracker
+
+    def fake_get_vit_tracker():
+        call_count["n"] += 1
+        return real()
+
+    monkeypatch.setattr(tracking, "get_vit_tracker", fake_get_vit_tracker)
+
+    img = np.zeros((100, 100, 3), dtype=np.uint8)
+    compute_tracker_displacement(img, img.copy(), [10, 10, 20, 20])
+    assert call_count["n"] == 1
+
+
+def test_check_frame_movement_forwards_tracker(monkeypatch):
+    """check_frame_movement(method='tracker', tracker=...) must forward it."""
+    received = {}
+
+    def fake_compute(ref, target, bbox, *, tracker=None):
+        received["tracker"] = tracker
+        return 0.0, 0.0, 0.0, tuple(bbox)
+
+    monkeypatch.setattr(tracking, "compute_tracker_displacement", fake_compute)
+
+    img = np.zeros((100, 100, 3), dtype=np.uint8)
+    sentinel = object()
+    check_frame_movement(
+        img,
+        img,
+        [10, 10, 20, 20],
+        threshold=10.0,
+        method="tracker",
+        tracker=sentinel,
+    )
+    assert received["tracker"] is sentinel

@@ -175,18 +175,24 @@ def compute_akaze_displacement(img1, img2):
     return median_dx, median_dy, distance
 
 
-def compute_tracker_displacement(ref_image, target_image, bbox_xywh):
+def compute_tracker_displacement(
+    ref_image, target_image, bbox_xywh, *, tracker=None
+):
     """VitTracker-based displacement.
 
     Args:
         ref_image: RGB reference frame.
         target_image: RGB target frame.
         bbox_xywh: [x, y, width, height].
+        tracker: Optional reusable ``cv2.TrackerVit`` instance. Pass one
+            in to avoid re-reading the ONNX weights from disk on every
+            call — re-``init()``ing the same tracker is supported.
 
     Returns:
         (dx, dy, distance, new_bbox_xywh). On failure: (0, 0, inf, None).
     """
-    tracker = get_vit_tracker()
+    if tracker is None:
+        tracker = get_vit_tracker()
     tracker.init(ref_image, tuple(bbox_xywh))
     ok, new_bbox = tracker.update(target_image)
     if not ok:
@@ -236,8 +242,14 @@ def check_frame_movement(
     threshold,
     scale=4.0,
     method="ecc",
+    *,
+    tracker=None,
 ):
     """Dispatcher: True if movement between frames exceeds threshold.
+
+    Args:
+        tracker: Optional reusable ``cv2.TrackerVit`` for ``method='tracker'``.
+            Ignored for ECC / POC / AKAZE methods.
 
     Returns:
         (exceeds, distance, dx, dy, new_bbox_xywh)
@@ -254,7 +266,7 @@ def check_frame_movement(
 
     if method == "tracker":
         dx, dy, distance, new_bbox = compute_tracker_displacement(
-            ref_image, target_image, bbox_xywh
+            ref_image, target_image, bbox_xywh, tracker=tracker
         )
         exceeds = distance > threshold
         return exceeds, distance, dx, dy, (None if exceeds else new_bbox)

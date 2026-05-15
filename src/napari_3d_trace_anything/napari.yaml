@@ -5,6 +5,11 @@ contributions:
     - id: napari-3d-trace-anything.TraceAnything
       python_name: napari_3d_trace_anything._widget:TraceAnything
       title: 3D Trace Anything
+    - id: napari-3d-trace-anything.TrackAnything
+      python_name: napari_3d_trace_anything._track_widget:TrackAnything
+      title: Track Anything (time-series)
   widgets:
     - command: napari-3d-trace-anything.TraceAnything
       display_name: 3D Trace Anything
+    - command: napari-3d-trace-anything.TrackAnything
+      display_name: Track Anything (time-series)
