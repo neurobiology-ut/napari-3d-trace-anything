@@ -131,6 +131,12 @@ def test_get_bounding_box_returns_none_when_missing(widget):
 # ---------------- Backend wiring ----------------
 
 
+def test_remote_url_field_is_empty_with_placeholder(widget):
+    """No private/internal default — user must enter their own server URL."""
+    assert widget._remote_url.text() == ""
+    assert widget._remote_url.placeholderText() != ""
+
+
 def test_ensure_backend_remote_builds_remote_backend(widget):
     widget._remote_radio.setChecked(True)
     widget._remote_url.setText("http://stub")
