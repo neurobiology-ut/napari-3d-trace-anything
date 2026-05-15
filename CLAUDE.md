@@ -82,6 +82,11 @@ The two widgets are independent. Layer names are deliberately disjoint so both c
 
 `tracking.py`, `sam_backends.RemoteSAMBackend`, and `_track_widget.py` are adapted from `neurobiology-ut/napari-gc-analysis` (Apache-2.0). The upstream repo is still maintained in parallel; bug fixes that apply to both must be ported manually until a single canonical source is decided.
 
+### Known limitations
+
+- **Blocking SAM model load** (`TraceAnything._load_model`, `TrackAnything._load_local_model`): both run synchronously on the GUI thread. The first download of `vit_h` can take minutes; the UI is unresponsive for the duration. Failures surface as a popup but there is no progress indicator. Threading these is a planned follow-up; until then, watch the terminal for download progress.
+- **Frame-skip in `tracker` mode runs VitTracker twice per non-skipped frame** (`TrackAnything._advance_through_skips`): when skip detection is enabled and the method is `Tracker`, `check_frame_movement` predicts the new box once for the skip decision, and the outer `_trace` loop then predicts again on the main tracker to advance state. Reusing the temp tracker's bbox would discard the main tracker's incremental state; a cleaner fix requires splitting skip-detection and main-loop tracker state. ECC / POC / AKAZE skip methods are not affected.
+
 ## Code Style
 
 - **Black**: line length 79, targets py38–py310

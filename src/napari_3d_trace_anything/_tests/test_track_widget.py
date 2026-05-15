@@ -377,3 +377,238 @@ def test_extract_frame_gray_passthrough(widget):
     images = widget._viewer.layers["test-image"].data
     frame = widget._extract_frame(images, 0)
     assert frame.shape == (100, 100)
+
+
+# ---------------- Image layer rename (Copilot L234) ----------------
+
+
+def test_image_layer_rename_updates_combo_single(widget):
+    layer = widget._viewer.layers["test-image"]
+    layer.name = "renamed"
+    assert widget._image_combo.findText("renamed") >= 0
+    assert widget._image_combo.findText("test-image") < 0
+    assert widget._image_layer_name == "renamed"
+
+
+def test_image_layer_rename_preserves_selection_with_multiple_layers(
+    make_napari_viewer,
+):
+    """Renaming the SELECTED layer must keep it selected (follow it by
+    object identity)."""
+    viewer = make_napari_viewer()
+    viewer.add_image(np.zeros((5, 50, 50)), name="a")
+    selected = viewer.add_image(np.zeros((5, 50, 50)), name="b")
+    viewer.add_image(np.zeros((5, 50, 50)), name="c")
+    w = TrackAnything(viewer)
+    w._image_combo.setCurrentText("b")
+    assert w._selected_layer is selected
+
+    selected.name = "b-renamed"
+    # combo current must follow the renamed layer, not jump to "a" or "c".
+    assert w._image_combo.currentText() == "b-renamed"
+    assert w._image_layer_name == "b-renamed"
+
+
+def test_non_selected_image_layer_rename_does_not_change_selection(
+    make_napari_viewer,
+):
+    """Renaming a NON-selected layer must not steal the combo selection."""
+    viewer = make_napari_viewer()
+    first = viewer.add_image(np.zeros((5, 50, 50)), name="first")
+    viewer.add_image(np.zeros((5, 50, 50)), name="middle")
+    third = viewer.add_image(np.zeros((5, 50, 50)), name="third")
+    w = TrackAnything(viewer)
+    w._image_combo.setCurrentText("first")
+    assert w._selected_layer is first
+
+    third.name = "third-renamed"
+    # Selection stays put.
+    assert w._image_combo.currentText() == "first"
+    assert w._selected_layer is first
+
+
+def test_image_layer_rename_handler_disconnects_on_remove(widget):
+    layer = widget._viewer.layers["test-image"]
+    before = len(widget._name_handlers)
+    assert before == 1
+    widget._viewer.layers.remove(layer)
+    # Layer removed → its handler dropped from the registry.
+    assert id(layer) not in widget._name_handlers
+    assert len(widget._name_handlers) == 0
+
+
+def test_widget_close_disconnects_handlers(widget):
+    layer = widget._viewer.layers["test-image"]
+    assert id(layer) in widget._name_handlers
+    widget.close()
+    assert len(widget._name_handlers) == 0
+
+
+# ---------------- Spinbox range sync (Copilot L192) ----------------
+
+
+def test_segment_range_clamps_to_frame_count(make_napari_viewer):
+    viewer = make_napari_viewer()
+    viewer.add_image(np.zeros((5, 100, 100)), name="five-frames")
+    w = TrackAnything(viewer)
+    assert w._segment_from.maximum() == 4
+    assert w._segment_to.maximum() == 4
+    # Default 100 gets clamped to 4.
+    assert w._segment_to.value() == 4
+
+
+def test_segment_range_single_frame_stack(make_napari_viewer):
+    """T=1 → max=0; both spinboxes pinned to 0."""
+    viewer = make_napari_viewer()
+    # (T=1, H, W) with W != 3 is accepted as 'gray'.
+    viewer.add_image(np.zeros((1, 50, 50)), name="single-frame")
+    w = TrackAnything(viewer)
+    assert w._segment_from.maximum() == 0
+    assert w._segment_to.maximum() == 0
+    assert w._segment_from.value() == 0
+    assert w._segment_to.value() == 0
+
+
+def test_segment_range_from_le_to_invariant(make_napari_viewer):
+    """If the previous `to` value was below current `from`, fix the
+    ordering after re-clamping."""
+    viewer = make_napari_viewer()
+    big = viewer.add_image(np.zeros((20, 50, 50)), name="big")
+    w = TrackAnything(viewer)
+    w._segment_from.setValue(15)
+    w._segment_to.setValue(18)
+    # Switch to a 5-frame layer → both should clamp to 4 with from <= to.
+    viewer.add_image(np.zeros((5, 50, 50)), name="small")
+    w._image_combo.setCurrentText("small")
+    assert w._segment_from.value() <= w._segment_to.value()
+    assert w._segment_from.value() <= 4
+    assert w._segment_to.value() <= 4
+    _ = big  # quiet unused
+
+
+# ---------------- max_frames semantic (Copilot L602) ----------------
+
+
+def test_advance_through_skips_allows_exactly_max_frames(widget):
+    """With max_frames=2, two consecutive exceeds are tolerated; the third
+    triggers bail (new semantic: ``skip_count > max_frames``)."""
+
+    def make_check(threshold_exceeds):
+        def fake(ref, target, bbox, *, threshold, method, tracker=None):
+            # Always exceeds for the test.
+            return True, threshold_exceeds, 0.0, 0.0, None
+
+        return fake
+
+    # Replace check_frame_movement so every call says "exceeds".
+    import napari_3d_trace_anything._track_widget as widget_module
+
+    original = widget_module.tracking.check_frame_movement
+    widget_module.tracking.check_frame_movement = make_check(99.0)
+    widget.show_popup = MagicMock()
+    try:
+        # 10 frames, ref doesn't matter — always exceeds.
+        widget._frame_stack_shape = (10, 100, 100)
+        result = widget._advance_through_skips(
+            widget._viewer.layers["test-image"].data,
+            np.zeros((100, 100, 3), dtype=np.uint8),
+            [0, 0, 10, 10],
+            start_idx=0,
+            threshold=1.0,
+            max_frames=2,
+            method="poc",
+        )
+    finally:
+        widget_module.tracking.check_frame_movement = original
+
+    # All exceeds, so bail eventually with None.
+    assert result is None
+    # Popup fired exactly once.
+    assert widget.show_popup.called
+
+
+# ---------------- Tracker reuse (Copilot L491) ----------------
+
+
+def test_compute_tracker_displacement_with_injected_tracker_skips_load(
+    monkeypatch,
+):
+    """If a tracker is injected, get_vit_tracker must not be called."""
+    import napari_3d_trace_anything._track_widget as widget_module
+
+    count = {"n": 0}
+
+    def fake():
+        count["n"] += 1
+        return widget_module.tracking.get_vit_tracker()
+
+    # First instantiate the real tracker BEFORE the spy.
+    real_tracker = widget_module.tracking.get_vit_tracker()
+    monkeypatch.setattr(widget_module.tracking, "get_vit_tracker", fake)
+
+    img = np.zeros((100, 100, 3), dtype=np.uint8)
+    widget_module.tracking.compute_tracker_displacement(
+        img, img.copy(), [10, 10, 20, 20], tracker=real_tracker
+    )
+    widget_module.tracking.compute_tracker_displacement(
+        img, img.copy(), [10, 10, 20, 20], tracker=real_tracker
+    )
+    assert count["n"] == 0
+
+
+# ---------------- L376 load failure popup ----------------
+
+
+def test_load_local_model_shows_popup_on_failure(widget, monkeypatch):
+    """If get_sam_model raises, predictor stays None and popup fires."""
+    import napari_3d_trace_anything._track_widget as widget_module
+
+    monkeypatch.setattr(
+        widget_module,
+        "get_sam_model",
+        lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("no disk space")),
+    )
+    widget.show_popup = MagicMock()
+    ok = widget._load_local_model()
+    assert ok is False
+    assert widget._local_predictor is None
+    assert widget._backend is None
+    widget.show_popup.assert_called()
+
+
+def test_ensure_backend_after_failed_load_returns_none(widget, monkeypatch):
+    """After a failed _load_local_model, _ensure_backend must NOT build
+    LocalSAMBackend(None)."""
+    import napari_3d_trace_anything._track_widget as widget_module
+
+    monkeypatch.setattr(
+        widget_module,
+        "get_sam_model",
+        lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    widget.show_popup = MagicMock()
+    widget._local_predictor = None
+    assert widget._ensure_backend() is None
+
+
+# ---------------- Unsupported via direct combo manipulation (L309) ----------
+
+
+def test_on_image_layer_changed_rejects_unsupported_layer(make_napari_viewer):
+    """Forcing an unsupported layer name into the combo must trigger the
+    defensive popup branch."""
+    viewer = make_napari_viewer()
+    viewer.add_image(np.zeros((5, 100, 100)), name="good")
+    # Unsupported but real layer (single RGB frame).
+    viewer.add_image(np.zeros((100, 100, 3)), name="bad")
+    w = TrackAnything(viewer)
+    w.show_popup = MagicMock()
+
+    # Force the unsupported layer into the combo (bypassing the filter).
+    w._image_combo.blockSignals(True)
+    w._image_combo.addItem("bad")
+    w._image_combo.blockSignals(False)
+    w._image_combo.setCurrentText("bad")
+
+    w.show_popup.assert_called()
+    assert w._trace_btn.isEnabled() is False
