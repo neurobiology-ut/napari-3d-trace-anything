@@ -20,7 +20,7 @@ from ._utils import (
     SAMSegmenter,
     check_image_type,
     create_boxes_list,
-    load_model,
+    get_sam_model,
     parse_slice_range,
     preprocess,
 )
@@ -327,8 +327,8 @@ class TraceAnything(QWidget):
                 self.device = "cpu"
 
         model_name = self._model_selection.currentText()
-        self._sam_model = load_model(model_name)
-        self._sam_model.to(device=self.device)
+        # Cached across widgets so the same weights aren't loaded twice.
+        self._sam_model = get_sam_model(model_name, device=self.device)
         self.sam_predictor = SamPredictor(self._sam_model)
         # SAMSegmenterインスタンスの作成
         self.sam_segmenter = SAMSegmenter(self.sam_predictor)
