@@ -1,0 +1,89 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project Overview
+
+napari-3d-trace-anything is a napari plugin for 3D object tracing using Meta's Segment Anything Model (SAM). Users draw bounding boxes on one slice and the plugin propagates segmentation across subsequent slices automatically, with optional iterative refinement.
+
+## Development Setup
+
+```bash
+pip install -e ".[testing]"
+```
+
+## Common Commands
+
+```bash
+# Run all tests
+pytest -v --cov=napari_3d_trace_anything --cov-report=xml
+
+# Run a single test file
+pytest src/napari_3d_trace_anything/_tests/test_box_generation.py -v
+
+# Run with tox (matrix: py38/39/310)
+tox
+
+# Lint and format
+black src/napari_3d_trace_anything
+ruff check src/napari_3d_trace_anything --fix
+
+# Pre-commit hooks
+pre-commit run --all-files
+```
+
+## Architecture
+
+### Plugin Entry Point
+
+Napari discovers the plugin via the NPE2 manifest system:
+- `pyproject.toml` `napari.manifest` entry point → `src/napari_3d_trace_anything/napari.yaml` → two widgets:
+  - `_widget.py:TraceAnything` — z-stack propagation
+  - `_track_widget.py:TrackAnything` — time-series tracking + Local/Remote SAM
+
+### Widgets
+
+| Widget | Use case | Box layer | Output layer(s) |
+|---|---|---|---|
+| `TraceAnything` | 3D z-stack: propagate labels slice→slice | `SAM-Box` (single, shared) | `Predicted-Label`, `Labels-{img}`, `Merged-Label-{img}` |
+| `TrackAnything` | Time-series: track + segment one object across frames | `Track-Box-{img}` (per image) | `Track-Label-{img}` (per image) |
+
+The two widgets are independent. Layer names are deliberately disjoint so both can run side-by-side without clobbering each other; cross-feature wiring (e.g. seeding `TrackAnything` from `TraceAnything` output) is not implemented.
+
+### Core Modules
+
+- **`_widget.py`** — `TraceAnything(QWidget)`: z-stack propagation widget. Manages UI controls (model selection, slice range, margin ratio, self-optimization, instance mode), a `SAM-Box` shapes layer for manual box placement, and a threaded worker (`_tracer` generator) for batch slice processing. The `_predict` method is the core segmentation loop: it generates boxes from the previous slice's labels, runs SAM, and handles large images by cropping a 1024×1024 ROI around the active box.
+
+- **`_track_widget.py`** — `TrackAnything(QWidget)`: time-series tracking widget adapted from `napari-gc-analysis`. One box is drawn on a starting frame; OpenCV `TrackerVit` propagates it forward and SAM segments each tracked box. Supports Local/Remote SAM via UI toggle, optional frame-skip detection (ECC / POC / AKAZE / Tracker) for occlusions, and a Segment Only mode that re-runs SAM on pre-existing boxes.
+
+- **`tracking.py`** — Pure functions adapted from `napari-gc-analysis`: `get_vit_tracker()` (loads bundled ONNX), displacement estimators (`compute_ecc_displacement`, `compute_poc_displacement`, `compute_akaze_displacement`, `compute_tracker_displacement`), `extract_roi_around_box`, `check_frame_movement` (dispatcher), and `compute_roi_for_segmentation` (centers a ≤1024px crop on the boxes, expanding when their union spans more). Used by `TrackAnything`.
+
+- **`sam_backends.py`** — `SAMBackend` Protocol with two-stage API (`prepare(image, image_id)` → `segment(box_xyxy)`). `LocalSAMBackend` wraps a `SamPredictor` and caches by `image_id`. `RemoteSAMBackend` POSTs a pickled uint8 image + JSON coords to a gc-analysis-style SAM server; bounded by `DEFAULT_TIMEOUT_SECONDS=60` and treats the server URL as a trust boundary (response is pickle-loaded).
+
+- **`_utils.py`** — `SAMSegmenter`: legacy wrapper around `SamPredictor` (used by `TraceAnything`); the new code path goes through `sam_backends.LocalSAMBackend`. Also contains `get_sam_model(name, device=None)` (process-wide weight cache shared by both widgets — predictors stay per-widget so `set_image` state doesn't collide), model download/caching (`~/.cache/napari-3d-Trace-Anything/`), image preprocessing, image type validation (`check_image_type`), and box generation from label regionprops (`create_boxes_list`).
+
+- **`processing/box_generation.py`** — Generates 81 candidate boxes per input box (scale × aspect ratio × position offsets) and selects top-k by IoU with previous slice masks.
+
+- **`processing/process_slice_sequence_v2.py`** — `optimize_segmentation`: Iteratively refines a single slice's segmentation by re-boxing from mask regionprops until IoU converges (>0.99) or 10 iterations, then validates result quality.
+
+### Bundled assets
+
+- `model/vit/object_tracking_vittrack_2023sep.onnx` — VitTracker weights from OpenCV Zoo (Apache-2.0; <https://github.com/opencv/opencv_zoo>), bundled because `cv2.TrackerVit_Params.net` requires a real filesystem path. `importlib.resources.as_file` resolves it on editable / unpacked-wheel installs; zip-imported environments are not supported.
+
+### Key Patterns
+
+- **Slice propagation** (`TraceAnything`): Previous slice labels → bounding boxes → SAM segmentation on current slice → repeat
+- **Frame tracking** (`TrackAnything`): VitTracker predicts next-frame box → SAM segments → optional frame-skip detection bridges occlusions
+- **Threading**: Both widgets use `napari._qt.qthreading.create_worker()` for non-blocking batch processing
+- **Device detection**: Auto-selects CUDA → MPS → CPU via torch
+- **Instance tracking** (`TraceAnything` only): Each labeled object gets a unique integer label, maintained across slices
+
+### Origins / parallel repos
+
+`tracking.py`, `sam_backends.RemoteSAMBackend`, and `_track_widget.py` are adapted from `neurobiology-ut/napari-gc-analysis` (Apache-2.0). The upstream repo is still maintained in parallel; bug fixes that apply to both must be ported manually until a single canonical source is decided.
+
+## Code Style
+
+- **Black**: line length 79, targets py38–py310
+- **Ruff**: rules E, F, W, UP, I, BLE, B, A, C4, ISC, G, PIE, SIM (ignores E501, UP006, UP007, SIM117)
+- Source lives under `src/napari_3d_trace_anything/`
