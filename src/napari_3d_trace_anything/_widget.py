@@ -363,6 +363,13 @@ class TraceAnything(QWidget):
     def _on_load_model_errored(self, exc):
         if self._closed:
             return
+        # Drop any previously loaded model — otherwise a subsequent
+        # Trace would silently reuse a stale segmenter built against
+        # the old model while the user just saw a "load failed" popup
+        # for a NEW model selection.
+        self._sam_model = None
+        self.sam_predictor = None
+        self.sam_segmenter = None
         self._set_loading_state(False)
         self.show_popup(f"Failed to load SAM model: {exc}")
 

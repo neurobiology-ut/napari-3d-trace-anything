@@ -80,6 +80,8 @@ class TrackAnything(QWidget):
         # Captured by the GUI thread on Trace/Segment Only click so the
         # worker never reads Qt widgets directly.
         self._pending_backend_config: dict | None = None
+        self._pending_trace_config: dict | None = None
+        self._pending_segment_only_config: dict | None = None
         # Per-Image-layer events.name handlers we hooked up — needed for
         # disconnect on layer removal / widget close.
         self._name_handlers: dict[int, object] = {}
@@ -513,16 +515,28 @@ class TrackAnything(QWidget):
     def _on_load_local_model_errored(self, exc):
         if self._closed:
             return
+        # Drop any previously loaded predictor — otherwise after a user
+        # switches model and the new load fails, a subsequent Trace
+        # would silently reuse the stale predictor (matches the old
+        # sync code's failure-path semantics).
+        self._local_sam_model = None
+        self._local_predictor = None
+        self._backend = None
         self._set_loading_state(False)
         self.show_popup(f"Failed to load local SAM model: {exc}")
 
     def _set_loading_state(self, loading):
         """Mutual exclusion: while a load worker is running, disable
-        every action that could compete with it."""
+        every action that could compete with it. When restoring, respect
+        whether the current image layer is supported (`_image_kind` is
+        None for unsupported / no image)."""
         self._load_local_btn.setEnabled(not loading)
         self._load_local_btn.setText("Loading..." if loading else "Load Model")
-        self._trace_btn.setEnabled(not loading)
-        self._segment_only_btn.setEnabled(not loading)
+        has_image = self._image_kind is not None
+        # Trace / Segment Only need both "not currently loading" AND a
+        # supported image layer selected.
+        self._trace_btn.setEnabled((not loading) and has_image)
+        self._segment_only_btn.setEnabled((not loading) and has_image)
         self._local_model_combo.setEnabled(not loading)
         if not loading:
             self._load_worker = None
@@ -544,6 +558,26 @@ class TrackAnything(QWidget):
             "device": self._pick_device() if is_local else None,
             "remote_url": self._remote_url.text().strip(),
             "remote_model": self._remote_model_combo.currentText(),
+        }
+
+    def _snapshot_trace_config(self):
+        """Capture every Qt-widget value ``_trace`` reads. Without this
+        the worker would call ``self._skip_threshold.value()`` etc.
+        directly from a non-GUI thread."""
+        return {
+            "start_index": int(self._viewer.dims.current_step[0]),
+            "skip_enabled": self._skip_group.isChecked(),
+            "skip_method": self._skip_method.currentText().lower(),
+            "skip_threshold": self._skip_threshold.value(),
+            "skip_max_frames": self._skip_max_frames.value(),
+            "debug_mode": self._debug_mode.isChecked(),
+        }
+
+    def _snapshot_segment_only_config(self):
+        """Capture spinbox values for the segment-only worker."""
+        return {
+            "frame_from": self._segment_from.value(),
+            "frame_to": self._segment_to.value(),
         }
 
     def _build_backend_for_worker(self, snap):
@@ -578,6 +612,7 @@ class TrackAnything(QWidget):
         if self._worker is not None or self._load_worker is not None:
             return  # explicit guard
         self._pending_backend_config = self._snapshot_backend_config()
+        self._pending_trace_config = self._snapshot_trace_config()
         self._set_trace_state(True)
         self._worker = create_worker(self._trace)
         self._worker.started.connect(lambda: print("tracing..."))
@@ -589,6 +624,9 @@ class TrackAnything(QWidget):
         if self._worker is not None or self._load_worker is not None:
             return  # explicit guard
         self._pending_backend_config = self._snapshot_backend_config()
+        self._pending_segment_only_config = (
+            self._snapshot_segment_only_config()
+        )
         self._set_trace_state(True)
         self._worker = create_worker(self._segment_only)
         self._worker.started.connect(lambda: print("segmenting..."))
@@ -628,6 +666,8 @@ class TrackAnything(QWidget):
         self._active_label_layer = None
         self._active_image_id = None
         self._pending_backend_config = None
+        self._pending_trace_config = None
+        self._pending_segment_only_config = None
         self._set_trace_state(False)
         print("worker stopped")
 
@@ -663,7 +703,16 @@ class TrackAnything(QWidget):
         if backend is None:
             return
 
-        index = self._viewer.dims.current_step[0]
+        # All trace parameters were captured on the GUI thread; the
+        # worker reads ONLY this dict, never the spinboxes/checkboxes.
+        trace_cfg = self._pending_trace_config or {}
+        index = trace_cfg.get("start_index", 0)
+        skip_enabled = trace_cfg.get("skip_enabled", False)
+        skip_method = trace_cfg.get("skip_method", "ecc")
+        skip_threshold = trace_cfg.get("skip_threshold", 10.0)
+        skip_max_frames = trace_cfg.get("skip_max_frames", 10)
+        debug_mode = trace_cfg.get("debug_mode", False)
+
         images = image_layer.data
         if label_layer.data.shape != frame_stack_shape:
             label_layer.data = np.zeros(frame_stack_shape, dtype="uint8")
@@ -671,11 +720,6 @@ class TrackAnything(QWidget):
         coords = self._get_bounding_box(index)
         if coords is None:
             return
-
-        skip_enabled = self._skip_group.isChecked()
-        skip_method = self._skip_method.currentText().lower()
-        skip_threshold = self._skip_threshold.value()
-        skip_max_frames = self._skip_max_frames.value()
 
         tracker = tracking.get_vit_tracker()
         # Reused across skip checks when skip_method == 'tracker' so the
@@ -724,7 +768,7 @@ class TrackAnything(QWidget):
                     return
                 ref_image = image
 
-            if self._debug_mode.isChecked():
+            if debug_mode:
                 self._viewer.dims.set_current_step(0, i)
                 image_layer.refresh()
             else:
@@ -765,13 +809,15 @@ class TrackAnything(QWidget):
         if backend is None:
             return
 
+        seg_cfg = self._pending_segment_only_config or {}
+
         images = image_layer.data
         if label_layer.data.shape != frame_stack_shape:
             label_layer.data = np.zeros(frame_stack_shape, dtype="uint8")
 
         n_frames = frame_stack_shape[0]
-        frame_from = self._segment_from.value()
-        frame_to = min(self._segment_to.value(), n_frames - 1)
+        frame_from = seg_cfg.get("frame_from", 0)
+        frame_to = min(seg_cfg.get("frame_to", n_frames - 1), n_frames - 1)
         if frame_from > frame_to:
             self.show_popup("Invalid frame range: 'From' must be <= 'To'")
             return

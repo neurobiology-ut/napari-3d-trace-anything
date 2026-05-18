@@ -740,7 +740,7 @@ def test_on_load_local_model_clicked_disables_buttons(widget, monkeypatch):
     assert widget._load_local_btn.isEnabled() is True
     assert widget._trace_btn.isEnabled() is True
     assert widget._local_predictor is not None  # state applied on GUI thread
-    assert isinstance(widget._backend, type(widget._backend))
+    assert isinstance(widget._backend, sam_backends.LocalSAMBackend)
 
 
 def test_on_load_local_model_errored_shows_popup(widget, monkeypatch):
@@ -786,3 +786,62 @@ def test_closed_flag_prevents_callback_state_change(widget):
     pre = widget._local_predictor
     widget._on_load_local_model_returned(("sam", "predictor"))
     assert widget._local_predictor is pre  # unchanged
+
+
+# ---------- PR#10 review fixes ----------
+
+
+def test_snapshot_trace_config_captures_dims_and_skip_controls(widget):
+    """All values _trace reads from Qt are captured at click time."""
+    widget._skip_group.setChecked(True)
+    widget._skip_method.setCurrentText("AKAZE")
+    widget._skip_threshold.setValue(7.5)
+    widget._skip_max_frames.setValue(4)
+    widget._debug_mode.setChecked(True)
+    widget._viewer.dims.set_current_step(0, 3)
+    snap = widget._snapshot_trace_config()
+    assert snap["start_index"] == 3
+    assert snap["skip_enabled"] is True
+    assert snap["skip_method"] == "akaze"
+    assert snap["skip_threshold"] == 7.5
+    assert snap["skip_max_frames"] == 4
+    assert snap["debug_mode"] is True
+
+
+def test_snapshot_segment_only_config_captures_spinboxes(widget):
+    widget._segment_from.setValue(2)
+    widget._segment_to.setValue(7)
+    snap = widget._snapshot_segment_only_config()
+    assert snap == {"frame_from": 2, "frame_to": 7}
+
+
+def test_failed_load_clears_local_state(widget):
+    """Errored callback must drop any previously loaded predictor."""
+    sentinel_predictor = MagicMock()
+    widget._local_sam_model = object()
+    widget._local_predictor = sentinel_predictor
+    widget._backend = object()
+    widget.show_popup = MagicMock()
+
+    widget._on_load_local_model_errored(RuntimeError("boom"))
+
+    assert widget._local_sam_model is None
+    assert widget._local_predictor is None
+    assert widget._backend is None
+    widget.show_popup.assert_called()
+
+
+def test_set_loading_state_respects_image_state(make_napari_viewer):
+    """Restoring after a load on an unsupported / empty viewer must
+    leave Trace disabled, not blindly enable it."""
+    viewer = make_napari_viewer()
+    w = TrackAnything(viewer)
+    # No supported image layer at startup.
+    assert w._image_kind is None
+    assert w._trace_btn.isEnabled() is False
+
+    # Simulate "load just finished" — Trace must still be disabled
+    # because there's no image to trace.
+    w._set_loading_state(False)
+    assert w._trace_btn.isEnabled() is False
+    assert w._segment_only_btn.isEnabled() is False

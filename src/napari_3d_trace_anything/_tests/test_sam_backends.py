@@ -576,7 +576,15 @@ def test_get_sam_model_serializes_concurrent_same_checkpoint(monkeypatch):
 
 
 def test_get_sam_model_parallel_different_checkpoints(monkeypatch):
-    """vit_h + vit_b are independent checkpoints → parallel allowed."""
+    """vit_h + vit_b are independent checkpoints → parallel allowed.
+
+    Synchronizes via a Barrier inside the fake ``load_model``: both
+    threads must reach the barrier before either releases. If the locks
+    were shared (per-model-name regression), the second thread would be
+    blocked on ``_lock_for_url`` and the barrier would time out with
+    ``BrokenBarrierError`` propagating through the thread. No
+    wall-clock assertion — that was flaky under CI load.
+    """
     import threading as _t
 
     monkeypatch.setattr(_utils, "_sam_model_cache", {})
@@ -586,29 +594,34 @@ def test_get_sam_model_parallel_different_checkpoints(monkeypatch):
         def to(self, device):
             return self
 
-    barrier = _t.Barrier(2)
-    enter_times = []
-    import time
+    barrier = _t.Barrier(2, timeout=2.0)
+    barrier_passed = []
 
     def fake_load(name):
-        enter_times.append(time.monotonic())
-        barrier.wait(timeout=2.0)
-        time.sleep(0.1)
+        barrier.wait()
+        barrier_passed.append(name)
         return _FakeSAM()
 
     monkeypatch.setattr(_utils, "load_model", fake_load)
 
+    errors = []
+
+    def run(name):
+        try:
+            _utils.get_sam_model(name)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
     threads = [
-        _t.Thread(target=_utils.get_sam_model, args=("vit_h",)),
-        _t.Thread(target=_utils.get_sam_model, args=("vit_b",)),
+        _t.Thread(target=run, args=("vit_h",)),
+        _t.Thread(target=run, args=("vit_b",)),
     ]
-    t0 = time.monotonic()
     for t in threads:
         t.start()
     for t in threads:
         t.join(timeout=5.0)
-    wall = time.monotonic() - t0
 
-    # If the lock serialized them, wall would be ~0.2s. Parallel allows ~0.1s.
-    assert wall < 0.18, f"different checkpoints should be parallel; got {wall}"
-    assert len(enter_times) == 2
+    assert (
+        not errors
+    ), f"Threads errored (likely barrier timed out — serialized?): {errors}"
+    assert sorted(barrier_passed) == ["vit_b", "vit_h"]

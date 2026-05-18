@@ -286,3 +286,19 @@ def test_closed_flag_prevents_callback_state_change(widget):
     before = widget.sam_segmenter
     widget._on_load_model_returned(("sentinel-sam", "sentinel-predictor"))
     assert widget.sam_segmenter is before  # unchanged
+
+
+def test_failed_load_clears_sam_state(widget):
+    """Errored callback drops any previously-loaded segmenter so a
+    subsequent Trace can't silently reuse the stale state."""
+    widget._sam_model = object()
+    widget.sam_predictor = MagicMock()
+    widget.sam_segmenter = MagicMock()
+    widget.show_popup = MagicMock()
+
+    widget._on_load_model_errored(RuntimeError("boom"))
+
+    assert widget._sam_model is None
+    assert widget.sam_predictor is None
+    assert widget.sam_segmenter is None
+    widget.show_popup.assert_called()
