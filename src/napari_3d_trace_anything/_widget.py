@@ -20,13 +20,17 @@ from tqdm import tqdm
 
 from ._utils import (
     SAMSegmenter,
+    box_to_xyxy,
     check_image_type,
     create_boxes_list,
     get_sam_model,
     parse_slice_range,
     preprocess,
 )
-from .processing.process_slice_sequence_v2 import optimize_segmentation
+from .processing.process_slice_sequence_v4 import (
+    membrane_map_from_image,
+    optimize_slice,
+)
 
 
 class TraceAnything(QWidget):
@@ -613,6 +617,7 @@ class TraceAnything(QWidget):
 
         margin_ratio = self._trace_params["margin_ratio"]
         n_slices = self._predict_label_layer.data.shape[0]
+        prev_labels = None
         if 0 <= prev_slice_index < n_slices:
             prev_pred = self._predict_label_layer.data[prev_slice_index]
             if np.any(prev_pred > 0):
@@ -621,6 +626,9 @@ class TraceAnything(QWidget):
                 labels = self._viewer.layers[labels_layer_name].data[
                     prev_slice_index
                 ]
+            # kept for optimize_slice: choosing among SAM's candidates and
+            # detecting identity switches both need the previous mask
+            prev_labels = labels
             boxes_created, label_values_created = create_boxes_list(
                 labels,
                 margin_ratio=margin_ratio,
@@ -652,7 +660,6 @@ class TraceAnything(QWidget):
 
         seg_kwargs = {
             "self_optimization": self._trace_params["self_optimization"],
-            "margin_ratio": self._trace_params["margin_ratio"],
             "hole_threshold": self._trace_params["hole_threshold"],
             "min_obj_size": self._trace_params["min_obj_size"],
         }
@@ -712,7 +719,15 @@ class TraceAnything(QWidget):
                 seg_image = preprocessed_image
                 seg_coords = coords
 
-            mask = self._segment(seg_image, seg_coords, **seg_kwargs)
+            if prev_labels is None:
+                ref_mask = None
+            else:
+                ref_full = prev_labels == label_value
+                ref_mask = ref_full[y1:y2, x1:x2] if should_crop else ref_full
+
+            mask = self._segment(
+                seg_image, seg_coords, ref_mask=ref_mask, **seg_kwargs
+            )
 
             if should_crop:
                 full_mask = np.zeros((height, width), dtype=bool)
@@ -736,31 +751,68 @@ class TraceAnything(QWidget):
         self._predict_label_layer.data = layer_data
         self._predict_label_layer.refresh()
 
+    def _membrane_map(self, image):
+        """Sato ridge map for ``image``, cached across boxes sharing an ROI.
+
+        One slice can carry dozens of labels that reuse the same crop, and
+        the ridge filter costs ~0.4 s per 1024x1024 ROI, so recomputing it
+        per box would dominate the run.
+
+        Args:
+            image (np.ndarray): slice, or the ROI crop of one.
+
+        Returns:
+            np.ndarray: ridge response map.
+        """
+        cached = getattr(self, "_membrane_cache", None)
+        if cached is not None and cached[0] is image:
+            return cached[1]
+        mmap = membrane_map_from_image(image)
+        self._membrane_cache = (image, mmap)
+        return mmap
+
     def _segment(
         self,
         image,
         coords,
         self_optimization=False,
-        margin_ratio=0.0,
         hole_threshold=0,
         min_obj_size=0,
+        ref_mask=None,
     ):
-        """Run segmentation with optional self-optimization
-        and morphological post-processing."""
+        """Segment one slice with the CLAMP optimizer, then clean up.
+
+        ``self_optimization`` selects between the two conditions compared in
+        the paper: False propagates the prompt with the base per-slice fixes
+        only, True adds the closed-loop refinement and its membrane gate.
+
+        Args:
+            image (np.ndarray): slice, or the ROI crop of one.
+            coords: box as ``[x1, y1, x2, y2]`` or four ``[z, y, x]``
+                vertices.
+            self_optimization (bool): enable closed-loop refinement.
+            hole_threshold (int): fill holes below this area.
+            min_obj_size (int): drop objects below this area.
+            ref_mask (np.ndarray | None): previous slice's mask for this
+                label, in ``image``'s coordinates. Used to choose among
+                SAM's candidates and to detect identity switches.
+        """
         from skimage.morphology import (
             remove_small_holes,
             remove_small_objects,
         )
 
-        if self_optimization:
-            _, mask = optimize_segmentation(
-                image,
-                coords,
-                self.sam_segmenter,
-                margin_ratio,
-            )
-        else:
-            mask = self.sam_segmenter.segment(image, coords)
+        predict_fn = self.sam_segmenter.make_predict_fn(image)
+        membrane_map = (
+            self._membrane_map(image) if self_optimization else None
+        )
+        mask = optimize_slice(
+            predict_fn,
+            box_to_xyxy(coords),
+            ref_mask,
+            membrane_map,
+            self_opt=self_optimization,
+        )
 
         if hole_threshold > 0:
             mask = remove_small_holes(
