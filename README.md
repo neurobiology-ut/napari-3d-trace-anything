@@ -66,7 +66,7 @@ When **instance mode** is checked, each bounding box is assigned a specific labe
 ### Options
 
 - **margin ratio**: Adjusts the bounding box margin for automatic box generation from previous slice labels. Positive values expand boxes, negative values shrink them (range: -1.0 to 1.0)
-- **self-optimization**: When checked, uses iterative refinement (re-boxing from mask regionprops until IoU converges) for each slice instead of single-pass SAM prediction
+- **self-optimization**: When checked, runs CLAMP's inner loop on each slice (see [CLAMP](#clamp)). When unchecked, only the outer loop (slice-to-slice propagation) is applied
 
 ### Keyboard shortcuts
 
@@ -80,6 +80,17 @@ When **instance mode** is checked, each bounding box is assigned a specific labe
 - **Branching objects**: If a traced object splits into two, accept the first trace to merged, then re-trace from the branch point with the same label number. The `cleared_labels` mechanism in `_predict` will replace the old trace in Predicted-Label, while the accepted portion remains safe in the merged layer.
 - **Correcting a trace**: Simply re-draw a box with the same instance number and trace again. The new result overwrites the old one in Predicted-Label. Accept when satisfied.
 - **Large images**: Images larger than 1024x1024 are automatically cropped around each bounding box for SAM inference, so there is no need to manually resize.
+
+## CLAMP
+
+Tracing uses CLAMP (Closed-Loop Auto-Mask Propagation), which has two loops:
+
+| Loop | What it does | Code |
+|---|---|---|
+| Outer | Propagates across slices: the previous slice's mask gives the prompt box for the next slice | `TraceAnything._tracer`, `_predict`, `create_boxes_list` |
+| Inner | Refines one slice: re-box from the mask and re-segment until IoU > 0.99 or 10 iterations | `self_opt_masks`, called from `optimize_slice` |
+
+With default widget settings (margin ratio 0, all filters 0), **self-optimization** on and off correspond to CLAMP and the outer-loop-only condition in the paper.
 
 ## Contributing
 
