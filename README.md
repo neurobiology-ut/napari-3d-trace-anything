@@ -89,7 +89,7 @@ Tracing uses CLAMP (Closed-Loop Auto-Mask Propagation), which has two loops:
 | Loop | What it does | Code |
 |---|---|---|
 | Outer | Propagates across slices: the previous slice's mask gives the prompt box for the next slice | `TraceAnything._tracer`, `_predict`, `create_boxes_list` |
-| Inner | Refines one slice: re-box from the mask and re-segment until IoU > 0.99 or 10 iterations | `self_opt_masks`, called from `optimize_slice` |
+| Inner | Refines one slice: re-box from the mask and re-segment until IoU > 0.99 or 10 iterations | `inner_loop`, called from `optimize_slice` |
 
 In instance mode with default settings (margin ratio 0, all filters 0, one box per label), **self-optimization** on and off correspond to CLAMP and the outer-loop-only condition in the paper.
 

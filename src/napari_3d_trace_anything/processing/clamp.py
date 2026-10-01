@@ -7,7 +7,7 @@ CLAMP has two loops:
   the previous slice's mask into the prompt box for the current one
   (``create_boxes_list``) before calling :func:`optimize_slice`.
 - **Inner loop** (closed-loop refinement within one slice) is
-  :func:`self_opt_masks`: re-box from the current mask and re-segment until
+  :func:`inner_loop`: re-box from the current mask and re-segment until
   IoU between iterations exceeds 0.99 or ``MAX_ITER`` is reached. It runs
   only with ``self_opt=True``; ``self_opt=False`` is the outer-loop-only
   condition.
@@ -95,7 +95,7 @@ def segment_best(predict_fn, box, ref_mask, mask_input):
     return masks[k]
 
 
-def self_opt_masks(predict_fn, initial_mask, max_iter=MAX_ITER):
+def inner_loop(predict_fn, initial_mask, max_iter=MAX_ITER):
     """CLAMP inner loop: re-box and re-segment until convergence.
 
     Each iteration labels the current mask into connected components,
@@ -273,7 +273,7 @@ def optimize_slice(
     # gross blow-up, after the membrane gate.
     best = iter0
     candidates = sorted(
-        self_opt_masks(predict_fn, iter0, max_iter), key=lambda x: -x.sum()
+        inner_loop(predict_fn, iter0, max_iter), key=lambda x: -x.sum()
     )
     for m in candidates:
         if (m & iter0).sum() / a0 < cover or m.sum() > blowup * a0:
