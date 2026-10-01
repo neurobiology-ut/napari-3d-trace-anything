@@ -44,15 +44,17 @@ def test_multiple_blobs_same_label():
     for box in boxes:
         assert box.shape == (4, 3), "各ボックスは4つの点と3つの座標値(z,y,x)を持つべき"
 
-    # 1つ目のblobのバウンディングボックス
+    # Extents are inclusive pixel indices: the blob at [5:10, 5:10] spans
+    # pixels 5..9, so its box runs 5..9. This is the convention the paper's
+    # benchmark used for prompt boxes; an exclusive max (10) gives a box 1 px
+    # larger, which changes SAM's output and the traced result.
     box1 = boxes[0]
     assert box1[0][1] == 5 and box1[0][2] == 5, "1つ目のblobの左上座標が正しくない"
-    assert box1[2][1] == 10 and box1[2][2] == 10, "1つ目のblobの右下座標が正しくない"
+    assert box1[2][1] == 9 and box1[2][2] == 9, "1つ目のblobの右下座標が正しくない"
 
-    # 2つ目のblobのバウンディングボックス
     box2 = boxes[1]
     assert box2[0][1] == 20 and box2[0][2] == 20, "2つ目のblobの左上座標が正しくない"
-    assert box2[2][1] == 25 and box2[2][2] == 25, "2つ目のblobの右下座標が正しくない"
+    assert box2[2][1] == 24 and box2[2][2] == 24, "2つ目のblobの右下座標が正しくない"
 
 
 def test_box_candidates_count():

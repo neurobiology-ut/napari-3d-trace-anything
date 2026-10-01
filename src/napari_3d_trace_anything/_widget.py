@@ -1,6 +1,7 @@
 import napari
 import numpy as np
 from napari._qt.qthreading import create_worker
+from qtpy.QtCore import Signal
 from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -9,6 +10,7 @@ from qtpy.QtWidgets import (
     QInputDialog,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QSpinBox,
     QVBoxLayout,
@@ -18,19 +20,25 @@ from tqdm import tqdm
 
 from ._utils import (
     SAMSegmenter,
+    box_to_xyxy,
     check_image_type,
     create_boxes_list,
-    load_model,
+    get_sam_model,
     parse_slice_range,
     preprocess,
 )
-from .processing.process_slice_sequence_v2 import optimize_segmentation
+from .processing.process_slice_sequence_v4 import (
+    membrane_map_from_image,
+    optimize_slice,
+)
 
 
 class TraceAnything(QWidget):
     PREDICTED_LABEL_NAME = "Predicted-Label"
     MERGED_LABEL_PREFIX = "Merged-Label"
     LABELS_PREFIX = "Labels"
+
+    _show_popup_signal = Signal(str)
 
     def __init__(self, napari_viewer):
         super().__init__()
@@ -42,19 +50,20 @@ class TraceAnything(QWidget):
         self._minimum_slice = 0
         self._maximum_slice = 1
         self._worker = None
+        self._load_worker = None
+        self._closed = False
         self._trace_params = {}
         self._pending_accept_label = None
         self._pending_accept_target = None
         self._layer_events_connected = False
+        self._show_popup_signal.connect(self._show_popup_slot)
 
         self.vbox = QVBoxLayout()
         self._model_selection = QComboBox()
-        self._model_selection.addItems(
-            ["default", "vit_h", "vit_l", "vit_b"]
-        )
+        self._model_selection.addItems(["default", "vit_h", "vit_l", "vit_b"])
         self.vbox.addWidget(self._model_selection)
         self._model_load_btn = QPushButton("load model")
-        self._model_load_btn.clicked.connect(self._load_model)
+        self._model_load_btn.clicked.connect(self._on_load_model_clicked)
         self.vbox.addWidget(self._model_load_btn)
         self.vbox.addWidget(QLabel("Image Layer"))
         self._image_layer_selection = QComboBox()
@@ -179,9 +188,7 @@ class TraceAnything(QWidget):
 
         buttons_hbox = QHBoxLayout()
         self._accept_btn = QPushButton("Accept (A)")
-        self._accept_btn.clicked.connect(
-            lambda: self._accept_prediction(None)
-        )
+        self._accept_btn.clicked.connect(lambda: self._accept_prediction(None))
         buttons_hbox.addWidget(self._accept_btn)
         self._clear_btn = QPushButton("Clear (C)")
         self._clear_btn.clicked.connect(
@@ -199,7 +206,7 @@ class TraceAnything(QWidget):
             face_color="transparent",
             ndim=3,
             features=self.features,
-            text=self.text
+            text=self.text,
         )
         self._sam_box_layer.features = self._sam_box_layer.features.astype(
             {"class": int}
@@ -264,9 +271,9 @@ class TraceAnything(QWidget):
                     max=np.iinfo(np.uint16).max,
                 )
                 if ok:
-                    layer.features.loc[
-                        len(layer.features) - 1, "class"
-                    ] = number
+                    layer.features.loc[len(layer.features) - 1, "class"] = (
+                        number
+                    )
                     layer.refresh_text()
                 else:
                     # キャンセル時はboxを削除
@@ -314,25 +321,99 @@ class TraceAnything(QWidget):
                     merged_name,
                 )
 
-    def _load_model(self):
-        import torch
-        from segment_anything import SamPredictor
-
+    def _on_load_model_clicked(self):
+        """Threaded entry point — keeps the GUI responsive during DL."""
+        if self._load_worker is not None or self._worker is not None:
+            return  # already loading or tracing
+        # Capture device on the GUI thread so the worker doesn't touch
+        # torch from a possibly half-initialized state.
         if self.device is None:
+            import torch
+
             if torch.cuda.is_available():
                 self.device = "cuda"
             elif torch.backends.mps.is_available():
                 self.device = "mps"
             else:
                 self.device = "cpu"
-
         model_name = self._model_selection.currentText()
-        self._sam_model = load_model(model_name)
-        self._sam_model.to(device=self.device)
-        self.sam_predictor = SamPredictor(self._sam_model)
-        # SAMSegmenterインスタンスの作成
+        device = self.device
+        self._set_loading_state(True)
+        self._load_worker = create_worker(
+            lambda: self._load_model_work(model_name, device)
+        )
+        self._load_worker.returned.connect(self._on_load_model_returned)
+        self._load_worker.errored.connect(self._on_load_model_errored)
+        self._load_worker.start()
+
+    @staticmethod
+    def _load_model_work(model_name, device):
+        """Pure work, no self mutation. Returns (sam, predictor)."""
+        from segment_anything import SamPredictor
+
+        sam = get_sam_model(model_name, device=device)
+        return sam, SamPredictor(sam)
+
+    def _on_load_model_returned(self, result):
+        if self._closed:
+            return
+        sam, predictor = result
+        self._sam_model = sam
+        self.sam_predictor = predictor
         self.sam_segmenter = SAMSegmenter(self.sam_predictor)
         print("model loaded")
+        self._set_loading_state(False)
+
+    def _on_load_model_errored(self, exc):
+        if self._closed:
+            return
+        # Drop any previously loaded model — otherwise a subsequent
+        # Trace would silently reuse a stale segmenter built against
+        # the old model while the user just saw a "load failed" popup
+        # for a NEW model selection.
+        self._sam_model = None
+        self.sam_predictor = None
+        self.sam_segmenter = None
+        self._set_loading_state(False)
+        self.show_popup(f"Failed to load SAM model: {exc}")
+
+    def _set_loading_state(self, loading):
+        """Mutual exclusion: while loading, disable Trace and the model
+        selector; while tracing, _set_trace_state(True) disables Load."""
+        self._model_load_btn.setEnabled(not loading)
+        self._model_load_btn.setText("Loading..." if loading else "load model")
+        self._trace_btn.setEnabled(not loading)
+        self._model_selection.setEnabled(not loading)
+        if not loading:
+            self._load_worker = None
+
+    def _set_trace_state(self, active):
+        """Disables Load while a Trace worker is running."""
+        self._model_load_btn.setEnabled(not active)
+        self._model_selection.setEnabled(not active)
+
+    def show_popup(self, message):
+        """Thread-safe popup: emits a signal so the QMessageBox is built
+        on the GUI thread even when called from a worker."""
+        self._show_popup_signal.emit(message)
+
+    def _show_popup_slot(self, message):
+        import sys
+
+        print(message)
+        if "pytest" in sys.modules:
+            return
+        msg = QMessageBox()
+        msg.setWindowTitle("Trace Anything")
+        msg.setText(message)
+        msg.setIcon(QMessageBox.Information)
+        msg.setStandardButtons(QMessageBox.Ok)
+        msg.exec_()
+
+    def closeEvent(self, event):  # noqa: N802 - Qt naming
+        """Mark widget closed so worker callbacks don't touch destroyed UI."""
+        self._closed = True
+        super().closeEvent(event)
 
     def _suppress_layer_events(self):
         """Context-manager-like disconnect/reconnect for layer events."""
@@ -360,10 +441,7 @@ class TraceAnything(QWidget):
     def _get_or_create_labels_layer(self, name, shape):
         """Return existing layer if name matches, else create new."""
         for layer in self._viewer.layers:
-            if (
-                isinstance(layer, napari.layers.Labels)
-                and layer.name == name
-            ):
+            if isinstance(layer, napari.layers.Labels) and layer.name == name:
                 return layer
         return self._viewer.add_labels(
             np.zeros(shape, dtype="uint16"),
@@ -401,9 +479,7 @@ class TraceAnything(QWidget):
         layer_name = self._image_layer_selection.currentText()
         if not layer_name:
             return
-        self._image_type = check_image_type(
-            self._viewer, layer_name
-        )
+        self._image_type = check_image_type(self._viewer, layer_name)
         if "stack" in self._image_type:
             self._maximum_slice = (
                 self._viewer.layers[
@@ -415,9 +491,7 @@ class TraceAnything(QWidget):
             self._end_slice.setMaximum(self._maximum_slice)
             self._end_slice.setValue(self._maximum_slice)
 
-            image_shape = self._viewer.layers[
-                layer_name
-            ].data.shape
+            image_shape = self._viewer.layers[layer_name].data.shape
             self._current_image_shape = image_shape
 
             # Suppress layer events during batch layer creation
@@ -464,47 +538,37 @@ class TraceAnything(QWidget):
                 self._worker.send(self._stop_predicting)
             else:
                 self._delete_worker()
-        else:
-            # Read all UI values on main thread
-            self._trace_params = {
-                "margin_ratio": self._margin_ratio.value(),
-                "self_optimization": (
-                    self._self_optimization.isChecked()
-                ),
-                "instance_mode": (
-                    self._instance_mode.isChecked()
-                ),
-                "hole_threshold": (
-                    self._hole_area_threshold.value()
-                ),
-                "min_obj_size": (
-                    self._min_object_size.value()
-                ),
-                "max_objects": (
-                    self._max_objects_per_label.value()
-                ),
-                "min_area": self._min_box_area.value(),
-                "image_layer": (
-                    self._image_layer_selection.currentText()
-                ),
-                "labels_layer": (
-                    self._labels_layer_selection.currentText()
-                ),
-                "start_slice": self._start_slice.value(),
-                "end_slice": self._end_slice.value(),
-            }
-            self._worker = create_worker(self._tracer)
-            self._worker.started.connect(
-                lambda: print("worker is running...")
-            )
-            self._worker.finished.connect(self._delete_worker)
-            self._worker.start()
-            self._stop_predicting = False
-            self._trace_btn.setText("stop")
+            return
+        # Explicit guard — independent of button enable state so tests
+        # and programmatic callers can't race the load worker.
+        if self._load_worker is not None:
+            return
+        # Read all UI values on main thread
+        self._trace_params = {
+            "margin_ratio": self._margin_ratio.value(),
+            "self_optimization": (self._self_optimization.isChecked()),
+            "instance_mode": (self._instance_mode.isChecked()),
+            "hole_threshold": (self._hole_area_threshold.value()),
+            "min_obj_size": (self._min_object_size.value()),
+            "max_objects": (self._max_objects_per_label.value()),
+            "min_area": self._min_box_area.value(),
+            "image_layer": (self._image_layer_selection.currentText()),
+            "labels_layer": (self._labels_layer_selection.currentText()),
+            "start_slice": self._start_slice.value(),
+            "end_slice": self._end_slice.value(),
+        }
+        self._set_trace_state(True)
+        self._worker = create_worker(self._tracer)
+        self._worker.started.connect(lambda: print("worker is running..."))
+        self._worker.finished.connect(self._delete_worker)
+        self._worker.start()
+        self._stop_predicting = False
+        self._trace_btn.setText("stop")
 
     def _delete_worker(self):
         del self._worker
         self._worker = None
+        self._set_trace_state(False)
         self._trace_btn.setText("Trace")
 
     def _tracer(self):
@@ -520,17 +584,13 @@ class TraceAnything(QWidget):
             return
         if start > end:
             for i in tqdm(range(start, end - 1, -1)):
-                self._predict(
-                    image, i, labels_layer_name, i + 1
-                )
+                self._predict(image, i, labels_layer_name, i + 1)
                 stop_predicting = yield
                 if stop_predicting:
                     break
         else:
             for i in tqdm(range(start, end + 1)):
-                self._predict(
-                    image, i, labels_layer_name, i - 1
-                )
+                self._predict(image, i, labels_layer_name, i - 1)
                 stop_predicting = yield
                 if stop_predicting:
                     break
@@ -557,14 +617,18 @@ class TraceAnything(QWidget):
 
         margin_ratio = self._trace_params["margin_ratio"]
         n_slices = self._predict_label_layer.data.shape[0]
+        prev_labels = None
         if 0 <= prev_slice_index < n_slices:
             prev_pred = self._predict_label_layer.data[prev_slice_index]
             if np.any(prev_pred > 0):
                 labels = prev_pred
             else:
-                labels = self._viewer.layers[
-                    labels_layer_name
-                ].data[prev_slice_index]
+                labels = self._viewer.layers[labels_layer_name].data[
+                    prev_slice_index
+                ]
+            # kept for optimize_slice: choosing among SAM's candidates and
+            # detecting identity switches both need the previous mask
+            prev_labels = labels
             boxes_created, label_values_created = create_boxes_list(
                 labels,
                 margin_ratio=margin_ratio,
@@ -595,13 +659,8 @@ class TraceAnything(QWidget):
             cleared_labels = set()
 
         seg_kwargs = {
-            "self_optimization": self._trace_params[
-                "self_optimization"
-            ],
-            "margin_ratio": self._trace_params["margin_ratio"],
-            "hole_threshold": self._trace_params[
-                "hole_threshold"
-            ],
+            "self_optimization": self._trace_params["self_optimization"],
+            "hole_threshold": self._trace_params["hole_threshold"],
             "min_obj_size": self._trace_params["min_obj_size"],
         }
 
@@ -632,9 +691,7 @@ class TraceAnything(QWidget):
                     center_y = int((y1_box + y2_box) / 2)
 
                     half_size = 512
-                    x1 = max(
-                        0, min(width - 1024, center_x - half_size)
-                    )
+                    x1 = max(0, min(width - 1024, center_x - half_size))
                     y1 = max(
                         0,
                         min(height - 1024, center_y - half_size),
@@ -662,8 +719,14 @@ class TraceAnything(QWidget):
                 seg_image = preprocessed_image
                 seg_coords = coords
 
+            if prev_labels is None:
+                ref_mask = None
+            else:
+                ref_full = prev_labels == label_value
+                ref_mask = ref_full[y1:y2, x1:x2] if should_crop else ref_full
+
             mask = self._segment(
-                seg_image, seg_coords, **seg_kwargs
+                seg_image, seg_coords, ref_mask=ref_mask, **seg_kwargs
             )
 
             if should_crop:
@@ -688,31 +751,68 @@ class TraceAnything(QWidget):
         self._predict_label_layer.data = layer_data
         self._predict_label_layer.refresh()
 
+    def _membrane_map(self, image):
+        """Sato ridge map for ``image``, cached across boxes sharing an ROI.
+
+        One slice can carry dozens of labels that reuse the same crop, and
+        the ridge filter costs ~0.4 s per 1024x1024 ROI, so recomputing it
+        per box would dominate the run.
+
+        Args:
+            image (np.ndarray): slice, or the ROI crop of one.
+
+        Returns:
+            np.ndarray: ridge response map.
+        """
+        cached = getattr(self, "_membrane_cache", None)
+        if cached is not None and cached[0] is image:
+            return cached[1]
+        mmap = membrane_map_from_image(image)
+        self._membrane_cache = (image, mmap)
+        return mmap
+
     def _segment(
         self,
         image,
         coords,
         self_optimization=False,
-        margin_ratio=0.0,
         hole_threshold=0,
         min_obj_size=0,
+        ref_mask=None,
     ):
-        """Run segmentation with optional self-optimization
-        and morphological post-processing."""
+        """Segment one slice with the CLAMP optimizer, then clean up.
+
+        ``self_optimization`` selects between the two conditions compared in
+        the paper: False propagates the prompt with the base per-slice fixes
+        only, True adds the closed-loop refinement and its membrane gate.
+
+        Args:
+            image (np.ndarray): slice, or the ROI crop of one.
+            coords: box as ``[x1, y1, x2, y2]`` or four ``[z, y, x]``
+                vertices.
+            self_optimization (bool): enable closed-loop refinement.
+            hole_threshold (int): fill holes below this area.
+            min_obj_size (int): drop objects below this area.
+            ref_mask (np.ndarray | None): previous slice's mask for this
+                label, in ``image``'s coordinates. Used to choose among
+                SAM's candidates and to detect identity switches.
+        """
         from skimage.morphology import (
             remove_small_holes,
             remove_small_objects,
         )
 
-        if self_optimization:
-            _, mask = optimize_segmentation(
-                image,
-                coords,
-                self.sam_segmenter,
-                margin_ratio,
-            )
-        else:
-            mask = self.sam_segmenter.segment(image, coords)
+        predict_fn = self.sam_segmenter.make_predict_fn(image)
+        membrane_map = (
+            self._membrane_map(image) if self_optimization else None
+        )
+        mask = optimize_slice(
+            predict_fn,
+            box_to_xyxy(coords),
+            ref_mask,
+            membrane_map,
+            self_opt=self_optimization,
+        )
 
         if hole_threshold > 0:
             mask = remove_small_holes(
@@ -742,10 +842,7 @@ class TraceAnything(QWidget):
             try:
                 target_slices = parse_slice_range(range_str)
                 max_slice = predict_data.shape[0] - 1
-                invalid = [
-                    s for s in target_slices
-                    if s < 0 or s > max_slice
-                ]
+                invalid = [s for s in target_slices if s < 0 or s > max_slice]
                 if invalid:
                     print(f"Invalid slice numbers: {invalid}")
                     return
@@ -759,9 +856,7 @@ class TraceAnything(QWidget):
             target_slices = list(range(predict_data.shape[0]))
 
         instance_mode = self._instance_mode.isChecked()
-        merged_name = (
-            self._merged_labels_layer_selection.currentText()
-        )
+        merged_name = self._merged_labels_layer_selection.currentText()
         if not instance_mode:
             # Reuse label from previous partial accept of the
             # same prediction into the same layer
@@ -769,9 +864,7 @@ class TraceAnything(QWidget):
                 self._pending_accept_label is None
                 or self._pending_accept_target != merged_name
             ):
-                self._pending_accept_label = (
-                    int(np.max(output_layer.data)) + 1
-                )
+                self._pending_accept_label = int(np.max(output_layer.data)) + 1
                 self._pending_accept_target = merged_name
             new_label = self._pending_accept_label
 
@@ -794,9 +887,7 @@ class TraceAnything(QWidget):
             for s in target_slices:
                 self._predict_label_layer.data[s] = 0
         else:
-            self._predict_label_layer.data = np.zeros_like(
-                predict_data
-            )
+            self._predict_label_layer.data = np.zeros_like(predict_data)
 
         # Reset pending label when prediction layer is fully clear
         if not np.any(self._predict_label_layer.data > 0):

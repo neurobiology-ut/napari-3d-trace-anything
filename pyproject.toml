@@ -36,6 +36,8 @@ dependencies = [
     "segment-anything",
     "tqdm",
     "scikit-image",
+    "opencv-python>=4.9.0",
+    "requests",
 ]
 
 [project.urls]
@@ -67,6 +69,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "*" = ["*.yaml"]
+"napari_3d_trace_anything" = ["model/vit/*.onnx"]
 
 [dependency-groups]
 dev = [
