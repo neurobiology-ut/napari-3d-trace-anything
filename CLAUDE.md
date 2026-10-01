@@ -19,7 +19,7 @@ pip install -e ".[testing]"
 pytest -v --cov=napari_3d_trace_anything --cov-report=xml
 
 # Run a single test file
-pytest src/napari_3d_trace_anything/_tests/test_box_generation.py -v
+pytest src/napari_3d_trace_anything/_tests/test_clamp.py -v
 
 # Run with tox (matrix: py38/39/310)
 tox
@@ -62,9 +62,7 @@ The two widgets are independent. Layer names are deliberately disjoint so both c
 
 - **`_utils.py`** — `SAMSegmenter`: legacy wrapper around `SamPredictor` (used by `TraceAnything`); the new code path goes through `sam_backends.LocalSAMBackend`. Also contains `get_sam_model(name, device=None)` (process-wide weight cache shared by both widgets — predictors stay per-widget so `set_image` state doesn't collide), model download/caching (`~/.cache/napari-3d-Trace-Anything/`), image preprocessing, image type validation (`check_image_type`), and box generation from label regionprops (`create_boxes_list`).
 
-- **`processing/box_generation.py`** — Generates 81 candidate boxes per input box (scale × aspect ratio × position offsets) and selects top-k by IoU with previous slice masks.
-
-- **`processing/process_slice_sequence_v2.py`** — `optimize_segmentation`: Iteratively refines a single slice's segmentation by re-boxing from mask regionprops until IoU converges (>0.99) or 10 iterations, then validates result quality.
+- **`processing/clamp.py`** — CLAMP per-slice optimizer used by `TraceAnything._segment`: `optimize_slice` (multimask candidate choice by IoU with the previous mask, switch recovery, stray removal) and `inner_loop` (re-box and re-segment until IoU > 0.99 or 10 iterations; only with self-optimization on). Pure numpy over a `predict_fn`, so it is unit-tested without SAM. The outer loop (slice-to-slice propagation) is `TraceAnything._tracer` / `_predict`. Its output must stay identical to the paper's benchmark; do not change the algorithm or its constants.
 
 ### Bundled assets
 

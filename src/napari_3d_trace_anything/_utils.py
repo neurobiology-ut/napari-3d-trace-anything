@@ -159,7 +159,9 @@ def create_box(props, mergin_ratio=0.0):
     # return [minc, minr, maxc, maxr]  # x1, y1, x2, y2の順序
 
 
-def create_boxes_list(labels, margin_ratio=0.0, max_objects=0, min_area=0):
+def create_boxes_list(
+    labels, margin_ratio=0.0, max_objects=0, min_area=0, merge_blobs=False
+):
     """ラベル画像から複数のバウンディングボックスを作成
 
     Args:
@@ -168,6 +170,9 @@ def create_boxes_list(labels, margin_ratio=0.0, max_objects=0, min_area=0):
         margin_ratio (float): バウンディングボックスのマージン比率
         max_objects (int): ラベルごとの最大オブジェクト数 (0=無制限)
         min_area (int): 最小面積閾値 (0=フィルタなし)
+        merge_blobs (bool): one box around all blobs of a label, as in the
+            paper, instead of one box per blob. ``min_area`` then applies
+            to the label's total area and ``max_objects`` has no effect.
 
     Returns:
         tuple: (boxes, label_values)
@@ -187,7 +192,9 @@ def create_boxes_list(labels, margin_ratio=0.0, max_objects=0, min_area=0):
         # 現在のラベル値のマスクを作成
         binary_mask = labels == label_val
         # 各blobを個別にラベリング
-        components = label(binary_mask)
+        components = (
+            binary_mask.astype(np.uint8) if merge_blobs else label(binary_mask)
+        )
         props_list = list(regionprops(components))
 
         # 面積閾値フィルタ

@@ -27,7 +27,8 @@ from ._utils import (
     parse_slice_range,
     preprocess,
 )
-from .processing.process_slice_sequence_v4 import (
+from .processing.clamp import (
+    largest_cc_2d,
     membrane_map_from_image,
     optimize_slice,
 )
@@ -53,6 +54,7 @@ class TraceAnything(QWidget):
         self._load_worker = None
         self._closed = False
         self._trace_params = {}
+        self._seed_masks = None
         self._pending_accept_label = None
         self._pending_accept_target = None
         self._layer_events_connected = False
@@ -163,6 +165,20 @@ class TraceAnything(QWidget):
         self.vbox.addWidget(QLabel("Instance Mode"))
         self._instance_mode = QCheckBox()
         self.vbox.addWidget(self._instance_mode)
+
+        self.vbox.addWidget(QLabel("One Box per Label"))
+        self._one_box_per_label = QCheckBox()
+        self._one_box_per_label.setChecked(True)
+        self._one_box_per_label.setToolTip(
+            "Instance mode: prompt each label with one box around all its "
+            "pixels and write only its largest component, as in the paper. "
+            "Uncheck to prompt each blob separately."
+        )
+        self.vbox.addWidget(self._one_box_per_label)
+        self._one_box_per_label.setEnabled(False)
+        self._instance_mode.toggled.connect(
+            self._one_box_per_label.setEnabled
+        )
 
         self._trace_btn = QPushButton("Trace")
         self._trace_btn.clicked.connect(self._trace)
@@ -550,6 +566,7 @@ class TraceAnything(QWidget):
             "instance_mode": (self._instance_mode.isChecked()),
             "hole_threshold": (self._hole_area_threshold.value()),
             "min_obj_size": (self._min_object_size.value()),
+            "one_box_per_label": self._one_box_per_label.isChecked(),
             "max_objects": (self._max_objects_per_label.value()),
             "min_area": self._min_box_area.value(),
             "image_layer": (self._image_layer_selection.currentText()),
@@ -574,6 +591,7 @@ class TraceAnything(QWidget):
     def _tracer(self):
         # CLAMP outer loop: propagate slice by slice (see _predict)
         self._update_values = []
+        self._seed_masks = None
         self._pending_accept_label = None
         self._pending_accept_target = None
         image_layer = self._trace_params["image_layer"]
@@ -617,9 +635,34 @@ class TraceAnything(QWidget):
                     self._update_values.append(label_value)
 
         margin_ratio = self._trace_params["margin_ratio"]
+        one_box = instance_mode and self._trace_params.get(
+            "one_box_per_label", True
+        )
         n_slices = self._predict_label_layer.data.shape[0]
         prev_labels = None
-        if 0 <= prev_slice_index < n_slices:
+        # One box per label: each label propagates from its own full mask
+        # on the previous slice (specks included), independent of the other
+        # labels and of what is written to the layer, as in the paper.
+        seeds = None
+        if one_box and self._seed_masks is not None:
+            seed_slice, seed_dict = self._seed_masks
+            if seed_slice == prev_slice_index and seed_dict:
+                seeds = seed_dict
+        if seeds is not None:
+            boxes_created, label_values_created = [], []
+            for label_value, (y0, x0, m) in seeds.items():
+                for box, _ in zip(
+                    *create_boxes_list(
+                        m.astype(np.int32),
+                        margin_ratio=margin_ratio,
+                        max_objects=self._trace_params["max_objects"],
+                        min_area=self._trace_params["min_area"],
+                        merge_blobs=True,
+                    )
+                ):
+                    boxes_created.append(box + np.array([0, y0, x0]))
+                    label_values_created.append(label_value)
+        elif 0 <= prev_slice_index < n_slices:
             prev_pred = self._predict_label_layer.data[prev_slice_index]
             if np.any(prev_pred > 0):
                 labels = prev_pred
@@ -635,6 +678,7 @@ class TraceAnything(QWidget):
                 margin_ratio=margin_ratio,
                 max_objects=self._trace_params["max_objects"],
                 min_area=self._trace_params["min_area"],
+                merge_blobs=one_box,
             )
         else:
             boxes_created, label_values_created = [], []
@@ -658,6 +702,7 @@ class TraceAnything(QWidget):
             # 処理済みlabel_valueを追跡する
             current_data = layer_data[slice_index].astype(np.int32)
             cleared_labels = set()
+        new_seeds = {}
 
         seg_kwargs = {
             "self_optimization": self._trace_params["self_optimization"],
@@ -720,34 +765,48 @@ class TraceAnything(QWidget):
                 seg_image = preprocessed_image
                 seg_coords = coords
 
-            if prev_labels is None:
+            region = np.s_[y1:y2, x1:x2] if should_crop else np.s_[:, :]
+            if seeds is not None:
+                ref_mask = (
+                    _paste(seeds[label_value], (height, width))[region]
+                    if label_value in seeds
+                    else None
+                )
+            elif prev_labels is None:
                 ref_mask = None
             else:
-                ref_full = prev_labels == label_value
-                ref_mask = ref_full[y1:y2, x1:x2] if should_crop else ref_full
+                ref_mask = (prev_labels == label_value)[region]
 
             mask = self._segment(
                 seg_image, seg_coords, ref_mask=ref_mask, **seg_kwargs
             )
 
-            if should_crop:
-                full_mask = np.zeros((height, width), dtype=bool)
-                full_mask[y1:y2, x1:x2] = mask
-                mask = full_mask
+            if one_box:
+                offset = (y1, x1) if should_crop else (0, 0)
+                seed = _crop_to_content(mask, *offset)
+                if label_value in new_seeds:
+                    seed = _merge_seeds(
+                        new_seeds[label_value], seed, (height, width)
+                    )
+                if seed is not None:
+                    new_seeds[label_value] = seed
+                mask = largest_cc_2d(mask)
 
             if instance_mode:
                 # 同じlabel_valueの初回処理時のみ古いピクセルをクリア
                 if label_value not in cleared_labels:
                     current_data[current_data == label_value] = 0
                     cleared_labels.add(label_value)
-                current_data[mask] = label_value
+                current_data[region][mask] = label_value
             else:
                 slice_data = layer_data[slice_index]
-                slice_data[mask] = 1
+                slice_data[region][mask] = 1
                 layer_data[slice_index] = slice_data
 
         if instance_mode:
             layer_data[slice_index] = current_data
+        if one_box:
+            self._seed_masks = (slice_index, new_seeds)
 
         self._predict_label_layer.data = layer_data
         self._predict_label_layer.refresh()
@@ -919,3 +978,26 @@ class TraceAnything(QWidget):
                 self._image_layer_selection.currentText()
             ].corner_pixels
         )
+
+
+def _crop_to_content(mask, y0, x0):
+    """``(y, x, crop)`` of a mask placed at ``(y0, x0)``; None if empty."""
+    ys, xs = np.nonzero(mask)
+    if len(ys) == 0:
+        return None
+    ya, yb, xa, xb = ys.min(), ys.max() + 1, xs.min(), xs.max() + 1
+    return (y0 + ya, x0 + xa, mask[ya:yb, xa:xb].copy())
+
+
+def _paste(seed, shape):
+    """Full-size boolean mask from a ``(y, x, crop)`` seed."""
+    y, x, crop = seed
+    full = np.zeros(shape, dtype=bool)
+    full[y : y + crop.shape[0], x : x + crop.shape[1]] = crop
+    return full
+
+
+def _merge_seeds(a, b, shape):
+    if a is None or b is None:
+        return a if b is None else b
+    return _crop_to_content(_paste(a, shape) | _paste(b, shape), 0, 0)
