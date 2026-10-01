@@ -137,34 +137,35 @@ def test_remote_url_field_is_empty_with_placeholder(widget):
     assert widget._remote_url.placeholderText() != ""
 
 
-def test_ensure_backend_remote_builds_remote_backend(widget):
-    widget._remote_radio.setChecked(True)
-    widget._remote_url.setText("http://stub")
-    backend = widget._ensure_backend()
+def test_build_backend_for_worker_creates_remote_backend(widget):
+    """Snapshot-driven build returns a Remote backend without writing self."""
+    snap = {
+        "kind": "remote",
+        "local_model_name": "vit_h",
+        "device": None,
+        "remote_url": "http://stub",
+        "remote_model": "sam",
+    }
+    backend = widget._build_backend_for_worker(snap)
     assert isinstance(backend, sam_backends.RemoteSAMBackend)
     assert backend.url == "http://stub"
 
 
-def test_ensure_backend_remote_empty_url_returns_none(widget):
-    widget._remote_radio.setChecked(True)
-    widget._remote_url.setText("   ")
+def test_build_backend_for_worker_remote_empty_url_returns_none(widget):
+    snap = {
+        "kind": "remote",
+        "local_model_name": "vit_h",
+        "device": None,
+        "remote_url": "",
+        "remote_model": "sam",
+    }
     widget.show_popup = MagicMock()
-    assert widget._ensure_backend() is None
+    assert widget._build_backend_for_worker(snap) is None
     widget.show_popup.assert_called()
 
 
-def test_ensure_backend_remote_rebuilds_on_url_change(widget):
-    widget._remote_radio.setChecked(True)
-    widget._remote_url.setText("http://a")
-    a = widget._ensure_backend()
-    widget._remote_url.setText("http://b")
-    b = widget._ensure_backend()
-    assert a is not b
-    assert b.url == "http://b"
-
-
-def test_ensure_backend_local_uses_loaded_predictor(widget):
-    """A pre-loaded predictor must be wrapped without re-loading SAM."""
+def test_build_backend_for_worker_uses_loaded_predictor(widget):
+    """A pre-loaded predictor is wrapped without re-loading SAM."""
     fake_predictor = MagicMock()
     fake_predictor.set_image = MagicMock()
     fake_predictor.predict = MagicMock(
@@ -175,34 +176,76 @@ def test_ensure_backend_local_uses_loaded_predictor(widget):
         )
     )
     widget._local_predictor = fake_predictor
-    widget._local_radio.setChecked(True)
-    backend = widget._ensure_backend()
+    snap = {
+        "kind": "local",
+        "local_model_name": "vit_h",
+        "device": "cpu",
+        "remote_url": "",
+        "remote_model": "sam",
+    }
+    backend = widget._build_backend_for_worker(snap)
     assert isinstance(backend, sam_backends.LocalSAMBackend)
 
 
-def test_backend_toggle_clears_cached_backend(widget):
-    widget._remote_radio.setChecked(True)
-    widget._remote_url.setText("http://stub")
-    widget._ensure_backend()
-    assert widget._backend is not None
-    widget._local_radio.setChecked(True)
-    # After toggle, cached backend is dropped so it can be rebuilt.
-    assert widget._backend is None
+def test_build_backend_for_worker_does_not_write_widget_state(widget):
+    """Pre-loaded state must be untouched by the worker-local builder."""
+    pre_backend = object()
+    pre_predictor = MagicMock()
+    pre_sam = object()
+    widget._backend = pre_backend
+    widget._local_predictor = pre_predictor
+    widget._local_sam_model = pre_sam
+    snap = {
+        "kind": "local",
+        "local_model_name": "vit_h",
+        "device": "cpu",
+        "remote_url": "",
+        "remote_model": "sam",
+    }
+    _ = widget._build_backend_for_worker(snap)
+    # State remains exactly as we set it (object identity).
+    assert widget._backend is pre_backend
+    assert widget._local_predictor is pre_predictor
+    assert widget._local_sam_model is pre_sam
+
+
+def test_build_backend_for_worker_remote_url_change_does_not_mutate_self(
+    widget,
+):
+    """Worker building a different RemoteSAMBackend must not replace
+    ``self._backend`` — that's the click handler's job."""
+    pre_backend = object()
+    widget._backend = pre_backend
+    snap = {
+        "kind": "remote",
+        "local_model_name": "vit_h",
+        "device": None,
+        "remote_url": "http://new",
+        "remote_model": "sam",
+    }
+    new_backend = widget._build_backend_for_worker(snap)
+    assert isinstance(new_backend, sam_backends.RemoteSAMBackend)
+    assert new_backend.url == "http://new"
+    assert widget._backend is pre_backend  # NOT overwritten
 
 
 # ---------------- _segment_frame ----------------
 
 
 def test_segment_frame_paints_mask_into_full_image(widget):
-    """No-crop path: mask returned for the requested frame index."""
+    """No-crop path: mask returned for the requested frame index.
+
+    Backend is injected via the new ``backend=`` kwarg; the worker
+    normally passes its local backend in this way.
+    """
     fake = MagicMock()
     fake.prepare = MagicMock()
     fake.segment = MagicMock(return_value=np.ones((100, 100), dtype=bool))
-    widget._backend = fake
-    widget._ensure_backend = lambda: fake
 
     image_rgb = np.zeros((100, 100, 3), dtype=np.uint8)
-    result = widget._segment_frame(image_rgb, [[10, 10, 20, 20]], 3)
+    result = widget._segment_frame(
+        image_rgb, [[10, 10, 20, 20]], 3, backend=fake
+    )
     assert result is not None
     mask, idx = result
     assert idx == 3
@@ -215,7 +258,6 @@ def test_segment_frame_crops_large_image_and_restores(widget):
     """For 2000x800 input the segment is run on a crop, then pasted back."""
     fake = MagicMock()
     fake.prepare = MagicMock()
-    # Return a mask matching whatever shape prepare was called with.
     captured = {}
 
     def fake_prepare(image, image_id):
@@ -227,39 +269,45 @@ def test_segment_frame_crops_large_image_and_restores(widget):
 
     fake.prepare.side_effect = fake_prepare
     fake.segment.side_effect = fake_segment
-    widget._backend = fake
-    widget._ensure_backend = lambda: fake
 
     image_rgb = np.zeros((800, 2000, 3), dtype=np.uint8)
-    result = widget._segment_frame(image_rgb, [[1500, 400, 50, 50]], 7)
+    result = widget._segment_frame(
+        image_rgb, [[1500, 400, 50, 50]], 7, backend=fake
+    )
     assert result is not None
     mask, _ = result
     assert mask.shape == (800, 2000)
-    # The mask must be confined to the cropped region (width 1024), not
-    # the full image — verifies that the crop+restore math agrees.
     assert mask.sum() <= 1024 * 800
 
 
 def test_segment_frame_returns_none_on_backend_exception(widget):
     fake = MagicMock()
     fake.prepare = MagicMock(side_effect=RuntimeError("nope"))
-    widget._backend = fake
-    widget._ensure_backend = lambda: fake
     widget.show_popup = MagicMock()
 
     image_rgb = np.zeros((100, 100, 3), dtype=np.uint8)
-    assert widget._segment_frame(image_rgb, [[10, 10, 20, 20]], 0) is None
+    assert (
+        widget._segment_frame(image_rgb, [[10, 10, 20, 20]], 0, backend=fake)
+        is None
+    )
     widget.show_popup.assert_called()
 
 
-def test_segment_frame_cache_key_includes_roi(widget):
-    """Codex P1: same frame + different ROI must NOT share a cache slot.
+def test_segment_frame_falls_back_to_self_backend(widget):
+    """``backend=None`` (the default) falls back to ``self._backend`` —
+    direct-call tests rely on this."""
+    fake = MagicMock()
+    fake.prepare = MagicMock()
+    fake.segment = MagicMock(return_value=np.ones((100, 100), dtype=bool))
+    widget._backend = fake
 
-    If image_id ignored the ROI, the second call would see image_id ==
-    first call's image_id and the backend would short-circuit prepare(),
-    leaving the stale crop in place while segment() ran against the new
-    crop-relative box coordinates.
-    """
+    image_rgb = np.zeros((100, 100, 3), dtype=np.uint8)
+    result = widget._segment_frame(image_rgb, [[10, 10, 20, 20]], 0)
+    assert result is not None
+
+
+def test_segment_frame_cache_key_includes_roi(widget):
+    """Codex P1: same frame + different ROI must NOT share a cache slot."""
     fake = MagicMock()
     captured = {}
 
@@ -272,21 +320,15 @@ def test_segment_frame_cache_key_includes_roi(widget):
 
     fake.prepare.side_effect = fake_prepare
     fake.segment.side_effect = fake_segment
-    widget._backend = fake
-    widget._ensure_backend = lambda: fake
 
     image_rgb = np.zeros((800, 2000, 3), dtype=np.uint8)
-    # Same frame index, two boxes far enough apart to produce different
-    # 1024-wide crops.
-    widget._segment_frame(image_rgb, [[100, 400, 50, 50]], 5)
-    widget._segment_frame(image_rgb, [[1900, 400, 50, 50]], 5)
+    widget._segment_frame(image_rgb, [[100, 400, 50, 50]], 5, backend=fake)
+    widget._segment_frame(image_rgb, [[1900, 400, 50, 50]], 5, backend=fake)
 
     assert fake.prepare.call_count == 2
     id1 = fake.prepare.call_args_list[0].kwargs["image_id"]
     id2 = fake.prepare.call_args_list[1].kwargs["image_id"]
     assert id1 != id2
-    # The frame index is still recoverable from the key for callers that
-    # want it.
     assert 5 in id1 and 5 in id2
 
 
@@ -296,12 +338,10 @@ def test_segment_frame_cache_key_stable_for_identical_roi(widget):
     fake = MagicMock()
     fake.prepare = MagicMock()
     fake.segment = MagicMock(return_value=np.ones((800, 1024), dtype=bool))
-    widget._backend = fake
-    widget._ensure_backend = lambda: fake
 
     image_rgb = np.zeros((800, 2000, 3), dtype=np.uint8)
-    widget._segment_frame(image_rgb, [[1500, 400, 50, 50]], 5)
-    widget._segment_frame(image_rgb, [[1500, 400, 50, 50]], 5)
+    widget._segment_frame(image_rgb, [[1500, 400, 50, 50]], 5, backend=fake)
+    widget._segment_frame(image_rgb, [[1500, 400, 50, 50]], 5, backend=fake)
 
     id1 = fake.prepare.call_args_list[0].kwargs["image_id"]
     id2 = fake.prepare.call_args_list[1].kwargs["image_id"]
@@ -559,26 +599,24 @@ def test_compute_tracker_displacement_with_injected_tracker_skips_load(
 # ---------------- L376 load failure popup ----------------
 
 
-def test_load_local_model_shows_popup_on_failure(widget, monkeypatch):
-    """If get_sam_model raises, predictor stays None and popup fires."""
+def test_load_local_model_work_raises_on_failure(monkeypatch):
+    """Pure work function raises; no widget instance involved."""
     import napari_3d_trace_anything._track_widget as widget_module
 
-    monkeypatch.setattr(
-        widget_module,
-        "get_sam_model",
-        lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("no disk space")),
-    )
-    widget.show_popup = MagicMock()
-    ok = widget._load_local_model()
-    assert ok is False
-    assert widget._local_predictor is None
-    assert widget._backend is None
-    widget.show_popup.assert_called()
+    def boom(*a, **kw):
+        raise RuntimeError("no disk space")
+
+    monkeypatch.setattr(widget_module, "get_sam_model", boom)
+    from napari_3d_trace_anything._track_widget import TrackAnything
+
+    with pytest.raises(RuntimeError, match="no disk space"):
+        TrackAnything._load_local_model_work("vit_h", "cpu")
 
 
-def test_ensure_backend_after_failed_load_returns_none(widget, monkeypatch):
-    """After a failed _load_local_model, _ensure_backend must NOT build
-    LocalSAMBackend(None)."""
+def test_build_backend_for_worker_after_failed_load_returns_none(
+    widget, monkeypatch
+):
+    """If lazy-load fails inside the worker, returns None + popup."""
     import napari_3d_trace_anything._track_widget as widget_module
 
     monkeypatch.setattr(
@@ -587,8 +625,18 @@ def test_ensure_backend_after_failed_load_returns_none(widget, monkeypatch):
         lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom")),
     )
     widget.show_popup = MagicMock()
-    widget._local_predictor = None
-    assert widget._ensure_backend() is None
+    widget._local_predictor = None  # force lazy-load path
+    snap = {
+        "kind": "local",
+        "local_model_name": "vit_h",
+        "device": "cpu",
+        "remote_url": "",
+        "remote_model": "sam",
+    }
+    assert widget._build_backend_for_worker(snap) is None
+    widget.show_popup.assert_called()
+    # Must not have leaked a LocalSAMBackend(None) onto self.
+    assert widget._backend is None
 
 
 # ---------------- Unsupported via direct combo manipulation (L309) ----------
@@ -612,3 +660,188 @@ def test_on_image_layer_changed_rejects_unsupported_layer(make_napari_viewer):
 
     w.show_popup.assert_called()
     assert w._trace_btn.isEnabled() is False
+
+
+# ---------- Threaded model loading + snapshot (PR#10) ----------
+
+
+def test_snapshot_backend_config_captures_local_settings(widget):
+    widget._local_radio.setChecked(True)
+    widget._local_model_combo.setCurrentText("vit_b")
+    snap = widget._snapshot_backend_config()
+    assert snap["kind"] == "local"
+    assert snap["local_model_name"] == "vit_b"
+    assert snap["device"] is not None
+
+
+def test_snapshot_backend_config_captures_remote_settings(widget):
+    widget._remote_radio.setChecked(True)
+    widget._remote_url.setText("http://server:1234/segment")
+    widget._remote_model_combo.setCurrentText("sam_hq")
+    snap = widget._snapshot_backend_config()
+    assert snap["kind"] == "remote"
+    assert snap["remote_url"] == "http://server:1234/segment"
+    assert snap["remote_model"] == "sam_hq"
+
+
+def _drive_load_worker_synchronously(widget, monkeypatch):
+    """Replace create_worker with a fake that lets the test fire the
+    returned/errored callbacks manually."""
+    captured = {}
+
+    def fake_create_worker(work):
+        worker = MagicMock()
+        worker._work = work
+        worker.returned.connect.side_effect = lambda cb: captured.update(
+            returned=cb
+        )
+        worker.errored.connect.side_effect = lambda cb: captured.update(
+            errored=cb
+        )
+        worker.start = MagicMock()
+        return worker
+
+    monkeypatch.setattr(
+        "napari_3d_trace_anything._track_widget.create_worker",
+        fake_create_worker,
+    )
+    return captured
+
+
+def test_on_load_local_model_clicked_disables_buttons(widget, monkeypatch):
+    captured = _drive_load_worker_synchronously(widget, monkeypatch)
+
+    class _FakeSAM:
+        def to(self, device):
+            return self
+
+    monkeypatch.setattr(
+        "napari_3d_trace_anything._track_widget.get_sam_model",
+        lambda name, device=None: _FakeSAM(),
+    )
+    import segment_anything
+
+    monkeypatch.setattr(
+        segment_anything, "SamPredictor", lambda sam: MagicMock()
+    )
+
+    widget._on_load_local_model_clicked()
+    assert widget._load_local_btn.text() == "Loading..."
+    assert widget._load_local_btn.isEnabled() is False
+    assert widget._trace_btn.isEnabled() is False
+    assert widget._segment_only_btn.isEnabled() is False
+    assert widget._local_model_combo.isEnabled() is False
+
+    # Fire returned callback as the worker would.
+    result = widget._load_worker._work()
+    captured["returned"](result)
+
+    assert widget._load_local_btn.text() == "Load Model"
+    assert widget._load_local_btn.isEnabled() is True
+    assert widget._trace_btn.isEnabled() is True
+    assert widget._local_predictor is not None  # state applied on GUI thread
+    assert isinstance(widget._backend, sam_backends.LocalSAMBackend)
+
+
+def test_on_load_local_model_errored_shows_popup(widget, monkeypatch):
+    captured = _drive_load_worker_synchronously(widget, monkeypatch)
+
+    def boom(*a, **kw):
+        raise RuntimeError("nope")
+
+    monkeypatch.setattr(
+        "napari_3d_trace_anything._track_widget.get_sam_model", boom
+    )
+    widget.show_popup = MagicMock()
+    widget._on_load_local_model_clicked()
+    try:
+        widget._load_worker._work()
+    except RuntimeError as exc:
+        captured["errored"](exc)
+    widget.show_popup.assert_called()
+    assert widget._load_local_btn.isEnabled() is True
+
+
+def test_load_click_rejected_during_trace(widget):
+    widget._worker = MagicMock()  # pretend trace is running
+    widget._on_load_local_model_clicked()
+    assert widget._load_worker is None  # explicit guard fired
+
+
+def test_trace_click_rejected_during_load(widget):
+    widget._load_worker = MagicMock()
+    widget._on_trace_click()
+    assert widget._worker is None
+
+
+def test_segment_only_click_rejected_during_load(widget):
+    widget._load_worker = MagicMock()
+    widget._on_segment_only_click()
+    assert widget._worker is None
+
+
+def test_closed_flag_prevents_callback_state_change(widget):
+    """Worker callbacks after close() must not mutate widget state."""
+    widget._closed = True
+    pre = widget._local_predictor
+    widget._on_load_local_model_returned(("sam", "predictor"))
+    assert widget._local_predictor is pre  # unchanged
+
+
+# ---------- PR#10 review fixes ----------
+
+
+def test_snapshot_trace_config_captures_dims_and_skip_controls(widget):
+    """All values _trace reads from Qt are captured at click time."""
+    widget._skip_group.setChecked(True)
+    widget._skip_method.setCurrentText("AKAZE")
+    widget._skip_threshold.setValue(7.5)
+    widget._skip_max_frames.setValue(4)
+    widget._debug_mode.setChecked(True)
+    widget._viewer.dims.set_current_step(0, 3)
+    snap = widget._snapshot_trace_config()
+    assert snap["start_index"] == 3
+    assert snap["skip_enabled"] is True
+    assert snap["skip_method"] == "akaze"
+    assert snap["skip_threshold"] == 7.5
+    assert snap["skip_max_frames"] == 4
+    assert snap["debug_mode"] is True
+
+
+def test_snapshot_segment_only_config_captures_spinboxes(widget):
+    widget._segment_from.setValue(2)
+    widget._segment_to.setValue(7)
+    snap = widget._snapshot_segment_only_config()
+    assert snap == {"frame_from": 2, "frame_to": 7}
+
+
+def test_failed_load_clears_local_state(widget):
+    """Errored callback must drop any previously loaded predictor."""
+    sentinel_predictor = MagicMock()
+    widget._local_sam_model = object()
+    widget._local_predictor = sentinel_predictor
+    widget._backend = object()
+    widget.show_popup = MagicMock()
+
+    widget._on_load_local_model_errored(RuntimeError("boom"))
+
+    assert widget._local_sam_model is None
+    assert widget._local_predictor is None
+    assert widget._backend is None
+    widget.show_popup.assert_called()
+
+
+def test_set_loading_state_respects_image_state(make_napari_viewer):
+    """Restoring after a load on an unsupported / empty viewer must
+    leave Trace disabled, not blindly enable it."""
+    viewer = make_napari_viewer()
+    w = TrackAnything(viewer)
+    # No supported image layer at startup.
+    assert w._image_kind is None
+    assert w._trace_btn.isEnabled() is False
+
+    # Simulate "load just finished" — Trace must still be disabled
+    # because there's no image to trace.
+    w._set_loading_state(False)
+    assert w._trace_btn.isEnabled() is False
+    assert w._segment_only_btn.isEnabled() is False

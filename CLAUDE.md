@@ -82,10 +82,15 @@ The two widgets are independent. Layer names are deliberately disjoint so both c
 
 `tracking.py`, `sam_backends.RemoteSAMBackend`, and `_track_widget.py` are adapted from `neurobiology-ut/napari-gc-analysis` (Apache-2.0). The upstream repo is still maintained in parallel; bug fixes that apply to both must be ported manually until a single canonical source is decided.
 
+### Model checkpoint storage
+
+SAM checkpoints download to `~/.cache/napari-3d-Trace-Anything/` atomically (`.part` → `os.replace`) and are validated with `zipfile.is_zipfile` on each load. If the cached file is corrupt (e.g. interrupted download from a previous run), `_utils.load_model` deletes it and re-downloads once before raising — the user doesn't need to clear the cache by hand. Concurrent loads of the same checkpoint URL (e.g. `default` and `vit_h` which share `sam_vit_h_4b8939.pth`) are serialized through a per-URL `RLock`, and the resulting SAM weights are cached by URL so two model names pointing at the same file share one in-memory instance.
+
 ### Known limitations
 
-- **Blocking SAM model load** (`TraceAnything._load_model`, `TrackAnything._load_local_model`): both run synchronously on the GUI thread. The first download of `vit_h` can take minutes; the UI is unresponsive for the duration. Failures surface as a popup but there is no progress indicator. Threading these is a planned follow-up; until then, watch the terminal for download progress.
 - **Frame-skip in `tracker` mode runs VitTracker twice per non-skipped frame** (`TrackAnything._advance_through_skips`): when skip detection is enabled and the method is `Tracker`, `check_frame_movement` predicts the new box once for the skip decision, and the outer `_trace` loop then predicts again on the main tracker to advance state. Reusing the temp tracker's bbox would discard the main tracker's incremental state; a cleaner fix requires splitting skip-detection and main-loop tracker state. ECC / POC / AKAZE skip methods are not affected.
+- **macOS + MPS occasional segfault during long Trace**: reported but not reliably reproducible. PR#10 adds `qRegisterMetaType("QVector<int>")` at import as a defensive measure (the queued-connection warning that often precedes the crash) and verbose logging in `_segment_frame` so the next reproduction includes which frame the crash happened on. Investigation tracked separately; if you hit it, the terminal log right before the SIGSEGV is the most useful artifact.
+- **Windows AV scanners can briefly hold downloaded checkpoints open**: `_utils._safe_replace` retries `os.replace` up to 3 times to absorb this. If it still fails, the `.pth` file may need to be excluded from the AV scanner.
 
 ## Code Style
 

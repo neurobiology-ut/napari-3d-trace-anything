@@ -51,6 +51,8 @@ class TrackAnything(QWidget):
         super().__init__()
         self._viewer = napari_viewer
         self._worker = None
+        self._load_worker = None
+        self._closed = False
         self._show_popup_signal.connect(self._show_popup_slot)
 
         self._backend: object | None = None
@@ -75,6 +77,11 @@ class TrackAnything(QWidget):
         self._active_image_layer = None
         self._active_label_layer = None
         self._active_image_id: str | None = None
+        # Captured by the GUI thread on Trace/Segment Only click so the
+        # worker never reads Qt widgets directly.
+        self._pending_backend_config: dict | None = None
+        self._pending_trace_config: dict | None = None
+        self._pending_segment_only_config: dict | None = None
         # Per-Image-layer events.name handlers we hooked up — needed for
         # disconnect on layer removal / widget close.
         self._name_handlers: dict[int, object] = {}
@@ -122,7 +129,7 @@ class TrackAnything(QWidget):
         local_model_row.addWidget(self._local_model_combo)
         local_layout.addLayout(local_model_row)
         self._load_local_btn = QPushButton("Load Model")
-        self._load_local_btn.clicked.connect(self._load_local_model)
+        self._load_local_btn.clicked.connect(self._on_load_local_model_clicked)
         local_layout.addWidget(self._load_local_btn)
         self._local_box.setLayout(local_layout)
         backend_layout.addWidget(self._local_box)
@@ -284,6 +291,9 @@ class TrackAnything(QWidget):
         """Disconnect every event we subscribed to so widget teardown
         doesn't leave orphaned callbacks hanging on layer instances or
         on the viewer's layer list."""
+        # Mark closed first so any in-flight worker callbacks that race
+        # the teardown become no-ops (they check self._closed).
+        self._closed = True
         for layer, handler in list(self._name_handlers.values()):
             with contextlib.suppress(TypeError, ValueError, RuntimeError):
                 layer.events.name.disconnect(handler)
@@ -465,64 +475,145 @@ class TrackAnything(QWidget):
             self._device = "cpu"
         return self._device
 
-    def _load_local_model(self):
-        """Load SAM weights + build predictor. Returns True on success.
-
-        On failure, clears predictor / backend state so a follow-up
-        ``_ensure_backend()`` doesn't wrap None in a ``LocalSAMBackend``
-        and crash on the next ``segment()`` call.
-
-        TODO(PR#10): this runs synchronously on the GUI thread; the
-        first vit_h download can take minutes and there is no progress
-        feedback. Threading is deferred to a follow-up PR that also
-        touches TraceAnything's matching code path.
-        """
+    @staticmethod
+    def _load_local_model_work(model_name, device):
+        """Pure work — no self mutation. Returns ``(sam, predictor)`` or
+        raises. Safe to call from a worker thread."""
         from segment_anything import SamPredictor
 
-        device = self._pick_device()
-        model_name = self._local_model_combo.currentText()
-        try:
-            sam = get_sam_model(model_name, device=device)
-            predictor = SamPredictor(sam)
-        except Exception as exc:  # noqa: BLE001 - many failure paths
-            self._local_sam_model = None
-            self._local_predictor = None
-            self._backend = None
-            self.show_popup(f"Failed to load local SAM model: {exc}")
-            return False
+        sam = get_sam_model(model_name, device=device)
+        return sam, SamPredictor(sam)
 
+    def _apply_local_model(self, sam, predictor):
+        """GUI-thread state apply for a successfully loaded model."""
         self._local_sam_model = sam
         self._local_predictor = predictor
-        self._backend = LocalSAMBackend(self._local_predictor)
-        print(f"Local SAM model {model_name!r} loaded on {device}")
-        return True
+        self._backend = LocalSAMBackend(predictor)
 
-    def _ensure_backend(self):
-        if self._local_radio.isChecked():
-            if self._local_predictor is None and not self._load_local_model():
-                return None  # popup already shown
-            if not isinstance(self._backend, LocalSAMBackend):
-                self._backend = LocalSAMBackend(self._local_predictor)
-            return self._backend
+    def _on_load_local_model_clicked(self):
+        """Threaded click handler — keeps the GUI responsive during DL."""
+        if self._load_worker is not None or self._worker is not None:
+            return  # explicit guard
+        model_name = self._local_model_combo.currentText()
+        device = self._pick_device()
+        self._set_loading_state(True)
+        self._load_worker = create_worker(
+            lambda: self._load_local_model_work(model_name, device)
+        )
+        self._load_worker.returned.connect(self._on_load_local_model_returned)
+        self._load_worker.errored.connect(self._on_load_local_model_errored)
+        self._load_worker.start()
 
-        url = self._remote_url.text().strip()
+    def _on_load_local_model_returned(self, result):
+        if self._closed:
+            return
+        sam, predictor = result
+        self._apply_local_model(sam, predictor)
+        print("Local SAM model loaded")
+        self._set_loading_state(False)
+
+    def _on_load_local_model_errored(self, exc):
+        if self._closed:
+            return
+        # Drop any previously loaded predictor — otherwise after a user
+        # switches model and the new load fails, a subsequent Trace
+        # would silently reuse the stale predictor (matches the old
+        # sync code's failure-path semantics).
+        self._local_sam_model = None
+        self._local_predictor = None
+        self._backend = None
+        self._set_loading_state(False)
+        self.show_popup(f"Failed to load local SAM model: {exc}")
+
+    def _set_loading_state(self, loading):
+        """Mutual exclusion: while a load worker is running, disable
+        every action that could compete with it. When restoring, respect
+        whether the current image layer is supported (`_image_kind` is
+        None for unsupported / no image)."""
+        self._load_local_btn.setEnabled(not loading)
+        self._load_local_btn.setText("Loading..." if loading else "Load Model")
+        has_image = self._image_kind is not None
+        # Trace / Segment Only need both "not currently loading" AND a
+        # supported image layer selected.
+        self._trace_btn.setEnabled((not loading) and has_image)
+        self._segment_only_btn.setEnabled((not loading) and has_image)
+        self._local_model_combo.setEnabled(not loading)
+        if not loading:
+            self._load_worker = None
+
+    def _set_trace_state(self, active):
+        """While a trace/segment_only worker is running, disable Load
+        and the model selector so they can't race with the worker."""
+        self._load_local_btn.setEnabled(not active)
+        self._local_model_combo.setEnabled(not active)
+
+    def _snapshot_backend_config(self):
+        """Capture every backend-relevant Qt widget value on the GUI
+        thread. The worker reads ONLY the returned dict — it never
+        touches Qt widgets directly."""
+        is_local = self._local_radio.isChecked()
+        return {
+            "kind": "local" if is_local else "remote",
+            "local_model_name": self._local_model_combo.currentText(),
+            "device": self._pick_device() if is_local else None,
+            "remote_url": self._remote_url.text().strip(),
+            "remote_model": self._remote_model_combo.currentText(),
+        }
+
+    def _snapshot_trace_config(self):
+        """Capture every Qt-widget value ``_trace`` reads. Without this
+        the worker would call ``self._skip_threshold.value()`` etc.
+        directly from a non-GUI thread."""
+        return {
+            "start_index": int(self._viewer.dims.current_step[0]),
+            "skip_enabled": self._skip_group.isChecked(),
+            "skip_method": self._skip_method.currentText().lower(),
+            "skip_threshold": self._skip_threshold.value(),
+            "skip_max_frames": self._skip_max_frames.value(),
+            "debug_mode": self._debug_mode.isChecked(),
+        }
+
+    def _snapshot_segment_only_config(self):
+        """Capture spinbox values for the segment-only worker."""
+        return {
+            "frame_from": self._segment_from.value(),
+            "frame_to": self._segment_to.value(),
+        }
+
+    def _build_backend_for_worker(self, snap):
+        """Build a SAMBackend from the captured snapshot.
+
+        Reads ``self._local_predictor`` (for set_image cache continuity
+        when click-Load already populated it) but never writes widget
+        state — the returned backend is owned by the worker frame.
+        """
+        if snap["kind"] == "local":
+            predictor = self._local_predictor
+            if predictor is None:
+                try:
+                    _sam, predictor = self._load_local_model_work(
+                        snap["local_model_name"], snap["device"]
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    self.show_popup(f"Failed to load local SAM model: {exc}")
+                    return None
+            return LocalSAMBackend(predictor)
+
+        url = snap["remote_url"]
+        model = snap["remote_model"]
         if not url:
             self.show_popup("Remote URL is empty")
             return None
-        model = self._remote_model_combo.currentText()
-        if (
-            not isinstance(self._backend, RemoteSAMBackend)
-            or self._backend.url != url
-            or self._backend.model != model
-        ):
-            self._backend = RemoteSAMBackend(url=url, model=model)
-        return self._backend
+        return RemoteSAMBackend(url=url, model=model)
 
     # ---------------- Tracing ----------------
 
     def _on_trace_click(self):
-        if self._worker is not None:
-            return
+        if self._worker is not None or self._load_worker is not None:
+            return  # explicit guard
+        self._pending_backend_config = self._snapshot_backend_config()
+        self._pending_trace_config = self._snapshot_trace_config()
+        self._set_trace_state(True)
         self._worker = create_worker(self._trace)
         self._worker.started.connect(lambda: print("tracing..."))
         self._worker.yielded.connect(self._update_label_layer)
@@ -530,8 +621,13 @@ class TrackAnything(QWidget):
         self._worker.start()
 
     def _on_segment_only_click(self):
-        if self._worker is not None:
-            return
+        if self._worker is not None or self._load_worker is not None:
+            return  # explicit guard
+        self._pending_backend_config = self._snapshot_backend_config()
+        self._pending_segment_only_config = (
+            self._snapshot_segment_only_config()
+        )
+        self._set_trace_state(True)
         self._worker = create_worker(self._segment_only)
         self._worker.started.connect(lambda: print("segmenting..."))
         self._worker.yielded.connect(self._update_label_layer)
@@ -569,6 +665,10 @@ class TrackAnything(QWidget):
         self._active_image_layer = None
         self._active_label_layer = None
         self._active_image_id = None
+        self._pending_backend_config = None
+        self._pending_trace_config = None
+        self._pending_segment_only_config = None
+        self._set_trace_state(False)
         print("worker stopped")
 
     def _reset_box(self):
@@ -583,9 +683,12 @@ class TrackAnything(QWidget):
             self.show_popup("Please select a supported image layer.")
             return
 
-        # Capture worker-scoped snapshots BEFORE _ensure_backend() —
-        # model load can take seconds during which the UI thread could
-        # change combo selection or layers could be renamed.
+        snap = self._pending_backend_config
+        if snap is None:
+            return  # defensive — should be set by _on_trace_click
+
+        # Worker-scoped snapshots — see _update_label_layer for why we
+        # don't lookup by name from inside the worker.
         image_layer = self._viewer.layers[self._image_layer_name]
         label_layer = self._label_layer
         frame_stack_shape = self._frame_stack_shape
@@ -593,11 +696,23 @@ class TrackAnything(QWidget):
         self._active_label_layer = label_layer
         self._active_image_id = self._image_layer_name
 
-        backend = self._ensure_backend()
+        # Build a worker-local backend from the snapshot — does not
+        # mutate widget state. The lazy model-load path may take seconds
+        # but only blocks this worker, not the GUI.
+        backend = self._build_backend_for_worker(snap)
         if backend is None:
             return
 
-        index = self._viewer.dims.current_step[0]
+        # All trace parameters were captured on the GUI thread; the
+        # worker reads ONLY this dict, never the spinboxes/checkboxes.
+        trace_cfg = self._pending_trace_config or {}
+        index = trace_cfg.get("start_index", 0)
+        skip_enabled = trace_cfg.get("skip_enabled", False)
+        skip_method = trace_cfg.get("skip_method", "ecc")
+        skip_threshold = trace_cfg.get("skip_threshold", 10.0)
+        skip_max_frames = trace_cfg.get("skip_max_frames", 10)
+        debug_mode = trace_cfg.get("debug_mode", False)
+
         images = image_layer.data
         if label_layer.data.shape != frame_stack_shape:
             label_layer.data = np.zeros(frame_stack_shape, dtype="uint8")
@@ -605,11 +720,6 @@ class TrackAnything(QWidget):
         coords = self._get_bounding_box(index)
         if coords is None:
             return
-
-        skip_enabled = self._skip_group.isChecked()
-        skip_method = self._skip_method.currentText().lower()
-        skip_threshold = self._skip_threshold.value()
-        skip_max_frames = self._skip_max_frames.value()
 
         tracker = tracking.get_vit_tracker()
         # Reused across skip checks when skip_method == 'tracker' so the
@@ -658,11 +768,11 @@ class TrackAnything(QWidget):
                     return
                 ref_image = image
 
-            if self._debug_mode.isChecked():
+            if debug_mode:
                 self._viewer.dims.set_current_step(0, i)
                 image_layer.refresh()
             else:
-                result = self._segment_frame(image, coords, i)
+                result = self._segment_frame(image, coords, i, backend=backend)
                 if result is None:
                     i += 1
                     continue
@@ -683,6 +793,10 @@ class TrackAnything(QWidget):
             self.show_popup("Please select a supported image layer.")
             return
 
+        snap = self._pending_backend_config
+        if snap is None:
+            return
+
         # Capture active state before model load (see _trace).
         image_layer = self._viewer.layers[self._image_layer_name]
         label_layer = self._label_layer
@@ -691,17 +805,19 @@ class TrackAnything(QWidget):
         self._active_label_layer = label_layer
         self._active_image_id = self._image_layer_name
 
-        backend = self._ensure_backend()
+        backend = self._build_backend_for_worker(snap)
         if backend is None:
             return
+
+        seg_cfg = self._pending_segment_only_config or {}
 
         images = image_layer.data
         if label_layer.data.shape != frame_stack_shape:
             label_layer.data = np.zeros(frame_stack_shape, dtype="uint8")
 
         n_frames = frame_stack_shape[0]
-        frame_from = self._segment_from.value()
-        frame_to = min(self._segment_to.value(), n_frames - 1)
+        frame_from = seg_cfg.get("frame_from", 0)
+        frame_to = min(seg_cfg.get("frame_to", n_frames - 1), n_frames - 1)
         if frame_from > frame_to:
             self.show_popup("Invalid frame range: 'From' must be <= 'To'")
             return
@@ -713,7 +829,7 @@ class TrackAnything(QWidget):
                 skipped += 1
                 continue
             image = self._as_rgb(self._extract_frame(images, i))
-            result = self._segment_frame(image, coords, i)
+            result = self._segment_frame(image, coords, i, backend=backend)
             if result is None:
                 continue
             processed += 1
@@ -793,23 +909,36 @@ class TrackAnything(QWidget):
 
     # ---- segmentation ----
 
-    def _segment_frame(self, image_rgb, boxes_xywh, frame_index):
+    def _segment_frame(
+        self, image_rgb, boxes_xywh, frame_index, *, backend=None
+    ):
         """Crop large images, run SAM, paste mask back to full size.
 
+        Args:
+            backend: worker-local backend instance. When None, falls back
+                to ``self._backend`` — used by direct-call tests; the
+                normal worker path always passes one in.
+
         Returns (mask, frame_index) or None on backend error.
+
+        Logs progress to stdout so a stuck Trace (segment_frame returning
+        None silently) shows up in the user's terminal — PR#10 diagnostic.
         """
-        backend = self._ensure_backend()
+        backend = backend if backend is not None else self._backend
         if backend is None:
+            print(f"_segment_frame: frame={frame_index} skipped — no backend")
             return None
+
+        print(
+            f"_segment_frame: frame={frame_index}, "
+            f"n_boxes={len(boxes_xywh)}"
+        )
 
         img_h, img_w = image_rgb.shape[:2]
         needs_crop, x1, y1, x2, y2 = tracking.compute_roi_for_segmentation(
             image_rgb.shape, boxes_xywh
         )
 
-        # Stable ID across mid-run rename. ``_active_image_id`` is set
-        # by _trace / _segment_only at start; for direct calls (tests)
-        # it may be None, in which case fall back to the live name.
         layer_id = (
             self._active_image_id
             if self._active_image_id is not None
@@ -819,20 +948,22 @@ class TrackAnything(QWidget):
         if needs_crop:
             crop = image_rgb[y1:y2, x1:x2]
             offset_x, offset_y = x1, y1
-            # ROI must be part of the cache key: rerunning on the same
-            # frame with a different box position can produce a different
-            # crop, and the backend must NOT short-circuit prepare() on
-            # the stale image.
             image_id = (layer_id, frame_index, x1, y1, x2, y2)
         else:
             crop = image_rgb
             offset_x = offset_y = 0
             image_id = (layer_id, frame_index, None)
 
+        import traceback
+
         try:
             backend.prepare(crop, image_id=image_id)
         except Exception as exc:  # noqa: BLE001 - surface any backend failure
-            self.show_popup(f"backend.prepare failed: {exc}")
+            tb_summary = "\n".join(traceback.format_exc().splitlines()[-5:])
+            self.show_popup(
+                f"backend.prepare failed at frame {frame_index}: {exc}\n"
+                f"{tb_summary}"
+            )
             return None
 
         full_mask = np.zeros((img_h, img_w), dtype=bool)
@@ -847,17 +978,26 @@ class TrackAnything(QWidget):
                 ],
                 dtype=np.float32,
             )
-            # noqa: BLE001 below — backend failures span requests, pickle,
-            # cv2, torch; we surface them all to the user as a popup.
             try:
                 mask = backend.segment(box_xyxy)
             except Exception as exc:  # noqa: BLE001
-                self.show_popup(f"backend.segment failed: {exc}")
+                tb_summary = "\n".join(
+                    traceback.format_exc().splitlines()[-5:]
+                )
+                self.show_popup(
+                    f"backend.segment failed at frame {frame_index}: "
+                    f"{exc}\n{tb_summary}"
+                )
                 return None
             if needs_crop:
                 full_mask[y1:y2, x1:x2] |= mask
             else:
                 full_mask |= mask
+
+        print(
+            f"_segment_frame: frame={frame_index} OK, "
+            f"mask_sum={int(full_mask.sum())}"
+        )
         return full_mask, frame_index
 
     # ---------------- helpers ----------------
