@@ -2,13 +2,13 @@
 
 import numpy as np
 
-from ..processing.process_slice_sequence_v4 import (
+from ..processing.clamp import (
     drop_stray_components,
+    inner_loop,
     largest_cc_2d,
     membrane_trim,
     optimize_slice,
     segment_best,
-    self_opt_masks,
 )
 
 SHAPE = (100, 100)
@@ -47,16 +47,16 @@ def test_segment_best_picks_candidate_closest_to_reference():
     assert (segment_best(predict_fn, None, None, None) == far).all()
 
 
-def test_self_opt_masks_stops_when_converged():
+def test_inner_loop_stops_when_converged():
     def predict_fn(box, mask_input):
         return rect(10, 20, 10, 20)[None], np.array([1.0])
 
-    masks = self_opt_masks(predict_fn, rect(10, 20, 10, 20))
+    masks = inner_loop(predict_fn, rect(10, 20, 10, 20))
     assert len(masks) == 2  # initial mask + one unchanged iteration
 
 
-def test_self_opt_masks_respects_iteration_cap():
-    masks = self_opt_masks(
+def test_inner_loop_respects_iteration_cap():
+    masks = inner_loop(
         growing_predict_fn(1), rect(40, 50, 40, 50), max_iter=4
     )
     assert len(masks) == 5  # initial mask + max_iter iterations

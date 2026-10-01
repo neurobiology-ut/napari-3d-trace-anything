@@ -27,7 +27,7 @@ from ._utils import (
     parse_slice_range,
     preprocess,
 )
-from .processing.process_slice_sequence_v4 import (
+from .processing.clamp import (
     largest_cc_2d,
     membrane_map_from_image,
     optimize_slice,
