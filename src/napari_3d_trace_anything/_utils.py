@@ -203,11 +203,9 @@ def create_boxes_list(labels, margin_ratio=0.0, max_objects=0, min_area=0):
         for props in props_list:
             # regionprops' bbox max is exclusive, but the next section's
             # prompt must use inclusive pixel extents: that is how the
-            # paper's benchmark builds it (xs.max()/ys.max() in
-            # experimental/regenerate_paper_labels.py). The 1 px difference
-            # is enough to flip SAM's candidate choice once a profile starts
-            # growing, after which the trace under-grows (label 35 fell to
-            # 15.6k px at z=20 against the benchmark's 20.2k).
+            # paper's benchmark builds it (xs.max()/ys.max()). The 1 px
+            # difference is enough to flip SAM's candidate choice once a
+            # profile starts growing, after which the trace under-grows.
             #
             # create_box itself stays exclusive: optimize_slice re-boxes
             # with it internally, and the benchmark relies on that too.
