@@ -67,6 +67,7 @@ When **instance mode** is checked, each bounding box is assigned a specific labe
 
 - **margin ratio**: Adjusts the bounding box margin for automatic box generation from previous slice labels. Positive values expand boxes, negative values shrink them (range: -1.0 to 1.0)
 - **self-optimization**: When checked, runs CLAMP's inner loop on each slice (see [CLAMP](#clamp)). When unchecked, only the outer loop (slice-to-slice propagation) is applied
+- **one box per label** (instance mode, on by default): Prompts each label with one box around all its pixels on the previous slice and writes only the largest component of the result, as in the paper. When unchecked, each separate blob gets its own box and all components are kept
 
 ### Keyboard shortcuts
 
@@ -90,7 +91,7 @@ Tracing uses CLAMP (Closed-Loop Auto-Mask Propagation), which has two loops:
 | Outer | Propagates across slices: the previous slice's mask gives the prompt box for the next slice | `TraceAnything._tracer`, `_predict`, `create_boxes_list` |
 | Inner | Refines one slice: re-box from the mask and re-segment until IoU > 0.99 or 10 iterations | `self_opt_masks`, called from `optimize_slice` |
 
-With default widget settings (margin ratio 0, all filters 0), **self-optimization** on and off correspond to CLAMP and the outer-loop-only condition in the paper.
+In instance mode with default settings (margin ratio 0, all filters 0, one box per label), **self-optimization** on and off correspond to CLAMP and the outer-loop-only condition in the paper.
 
 ## Contributing
 

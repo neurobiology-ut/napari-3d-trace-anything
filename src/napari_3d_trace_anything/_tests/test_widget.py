@@ -161,6 +161,105 @@ def test_predict_skips_out_of_range_prev_slice(widget, monkeypatch):
     widget._predict(image, n_slices - 1, labels_name, n_slices)
 
 
+def _speck_mask():
+    """A 20x20 body plus a 2x2 speck that sets the box's far corner."""
+    mask = np.zeros((100, 100), dtype=bool)
+    mask[10:30, 10:30] = True
+    mask[50:52, 50:52] = True
+    return mask
+
+
+def _seed_label(widget, labels_name, value):
+    labels_layer = widget._viewer.layers[labels_name]
+    data = labels_layer.data.copy()
+    data[0, 10:30, 10:30] = value
+    labels_layer.data = data
+
+
+def test_predict_one_box_per_label(widget, monkeypatch):
+    """Instance mode: the speck is dropped from the layer but still
+    widens the next slice's single prompt box, as in the paper."""
+    labels_name = f"{TraceAnything.LABELS_PREFIX}-test-image"
+    _seed_label(widget, labels_name, 3)
+    boxes = []
+
+    def fake_segment(image, coords, **kwargs):
+        boxes.append(np.asarray(coords))
+        return _speck_mask()
+
+    monkeypatch.setattr(widget, "_segment", fake_segment)
+    widget.sam_segmenter = object()
+    widget._trace_params = _trace_params(labels_name, instance_mode=True)
+    image = widget._viewer.layers["test-image"].data
+
+    widget._predict(image, 1, labels_name, 0)
+    out = widget._predict_label_layer.data[1]
+    assert out[10:30, 10:30].all() and not out[50:52, 50:52].any()
+
+    widget._predict(image, 2, labels_name, 1)
+    assert len(boxes) == 2
+    assert boxes[1][:, 1:].min() == 10
+    assert boxes[1][:, 1:].max() == 51  # one box reaching the speck
+
+
+def test_predict_labels_propagate_independently(widget, monkeypatch):
+    """A label's speck overwritten by another label on the layer must
+    still widen that label's own next box."""
+    labels_name = f"{TraceAnything.LABELS_PREFIX}-test-image"
+    labels_layer = widget._viewer.layers[labels_name]
+    data = labels_layer.data.copy()
+    data[0, 10:30, 10:30] = 3
+    data[0, 60:80, 60:80] = 7
+    labels_layer.data = data
+    boxes = {}
+
+    def fake_segment(image, coords, **kwargs):
+        coords = np.asarray(coords)
+        if coords[:, 1:].min() < 50:  # label 3: body + speck inside 7
+            boxes.setdefault(3, []).append(coords)
+            mask = np.zeros((100, 100), dtype=bool)
+            mask[10:30, 10:30] = True
+            mask[70:72, 70:72] = True
+            return mask
+        mask = np.zeros((100, 100), dtype=bool)
+        mask[60:80, 60:80] = True
+        return mask
+
+    monkeypatch.setattr(widget, "_segment", fake_segment)
+    widget.sam_segmenter = object()
+    widget._trace_params = _trace_params(labels_name, instance_mode=True)
+    image = widget._viewer.layers["test-image"].data
+
+    widget._predict(image, 1, labels_name, 0)
+    widget._predict(image, 2, labels_name, 1)
+    assert boxes[3][1][:, 1:].max() == 71
+
+
+def test_predict_box_per_blob_when_unchecked(widget, monkeypatch):
+    """Unchecked: previous behaviour, one box per blob, all kept."""
+    labels_name = f"{TraceAnything.LABELS_PREFIX}-test-image"
+    _seed_label(widget, labels_name, 3)
+    boxes = []
+
+    def fake_segment(image, coords, **kwargs):
+        boxes.append(np.asarray(coords))
+        return _speck_mask()
+
+    monkeypatch.setattr(widget, "_segment", fake_segment)
+    widget.sam_segmenter = object()
+    widget._trace_params = {
+        **_trace_params(labels_name, instance_mode=True),
+        "one_box_per_label": False,
+    }
+    image = widget._viewer.layers["test-image"].data
+
+    widget._predict(image, 1, labels_name, 0)
+    assert widget._predict_label_layer.data[1, 50:52, 50:52].all()
+
+    widget._predict(image, 2, labels_name, 1)
+    assert len(boxes) == 3  # body and speck prompted separately
+
+
 # ---------- Threaded model loading (PR#10) ----------
 
 
