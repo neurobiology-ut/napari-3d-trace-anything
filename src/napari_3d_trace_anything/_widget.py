@@ -572,6 +572,7 @@ class TraceAnything(QWidget):
         self._trace_btn.setText("Trace")
 
     def _tracer(self):
+        # CLAMP outer loop: propagate slice by slice (see _predict)
         self._update_values = []
         self._pending_accept_label = None
         self._pending_accept_target = None
