@@ -201,7 +201,18 @@ def create_boxes_list(labels, margin_ratio=0.0, max_objects=0, min_area=0):
 
         # 各blobに対してバウンディングボックスを生成
         for props in props_list:
-            box_coords = create_box(props, margin_ratio)
+            # regionprops' bbox max is exclusive, but the next section's
+            # prompt must use inclusive pixel extents: that is how the
+            # paper's benchmark builds it (xs.max()/ys.max() in
+            # experimental/regenerate_paper_labels.py). The 1 px difference
+            # is enough to flip SAM's candidate choice once a profile starts
+            # growing, after which the trace under-grows (label 35 fell to
+            # 15.6k px at z=20 against the benchmark's 20.2k).
+            #
+            # create_box itself stays exclusive: optimize_slice re-boxes
+            # with it internally, and the benchmark relies on that too.
+            x1, y1, x2, y2 = create_box(props, margin_ratio)
+            box_coords = [x1, y1, x2 - 1, y2 - 1]
             box = np.array(
                 [
                     [0, box_coords[1], box_coords[0]],  # [z, y1, x1]
