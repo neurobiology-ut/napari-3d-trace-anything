@@ -36,7 +36,7 @@ dependencies = [
     "segment-anything",
     "tqdm",
     "scikit-image",
-    "opencv-python>=4.9.0",
+    "opencv-python-headless>=4.9.0,<5",
     "requests",
 ]
 
