@@ -19,7 +19,7 @@ pip install -e ".[testing]"
 pytest -v --cov=napari_3d_trace_anything --cov-report=xml
 
 # Run a single test file
-pytest src/napari_3d_trace_anything/_tests/test_box_generation.py -v
+pytest src/napari_3d_trace_anything/_tests/test_process_slice_sequence_v4.py -v
 
 # Run with tox (matrix: py38/39/310)
 tox
