@@ -27,6 +27,37 @@ class SAMSegmenter:
         self.predictor = predictor
         self.current_image = None
 
+    def make_predict_fn(self, image):
+        """Return a ``(box, mask_input) -> (masks, scores)`` callable.
+
+        Prepares ``image`` once (reusing the cached embedding when it is
+        unchanged) and exposes SAM in multi-mask mode, which is the contract
+        :func:`..processing.optimize_slice` expects.
+
+        Args:
+            image (np.ndarray): 2D grayscale or RGB slice.
+
+        Returns:
+            Callable: predict function over ``[x1, y1, x2, y2]`` boxes.
+        """
+        if len(image.shape) == 2:
+            image = gray2rgb(image)
+        if self.current_image is None or not np.array_equal(
+            image, self.current_image
+        ):
+            self.predictor.set_image(image)
+            self.current_image = image
+
+        def predict_fn(box, mask_input=None):
+            masks, scores, _ = self.predictor.predict(
+                box=np.asarray(box, dtype=float)[None, :],
+                mask_input=mask_input,
+                multimask_output=True,
+            )
+            return masks, scores
+
+        return predict_fn
+
     def segment(self, image, box):
         """画像のセグメンテーションを行う
 
@@ -91,6 +122,26 @@ def calculate_iou(mask1, mask2):
     return intersection / union
 
 
+def box_to_xyxy(box):
+    """Normalize a box to ``[x1, y1, x2, y2]``.
+
+    Accepts either that form directly or napari's four ``[z, y, x]``
+    rectangle vertices.
+
+    Args:
+        box (np.ndarray or list): box in either accepted form.
+
+    Returns:
+        np.ndarray: ``[x1, y1, x2, y2]`` as float.
+    """
+    box = np.asarray(box)
+    if box.ndim == 2:  # napari rectangle: [[z, y1, x1], ..., [z, y2, x1]]
+        return np.array(
+            [box[0, 2], box[0, 1], box[2, 2], box[2, 1]], dtype=float
+        )
+    return box.astype(float)
+
+
 def create_box(props, mergin_ratio=0.0):
     """RegionPropertiesオブジェクトからバウンディングボックスを作成
 
@@ -150,7 +201,18 @@ def create_boxes_list(labels, margin_ratio=0.0, max_objects=0, min_area=0):
 
         # 各blobに対してバウンディングボックスを生成
         for props in props_list:
-            box_coords = create_box(props, margin_ratio)
+            # regionprops' bbox max is exclusive, but the next section's
+            # prompt must use inclusive pixel extents: that is how the
+            # paper's benchmark builds it (xs.max()/ys.max() in
+            # experimental/regenerate_paper_labels.py). The 1 px difference
+            # is enough to flip SAM's candidate choice once a profile starts
+            # growing, after which the trace under-grows (label 35 fell to
+            # 15.6k px at z=20 against the benchmark's 20.2k).
+            #
+            # create_box itself stays exclusive: optimize_slice re-boxes
+            # with it internally, and the benchmark relies on that too.
+            x1, y1, x2, y2 = create_box(props, margin_ratio)
+            box_coords = [x1, y1, x2 - 1, y2 - 1]
             box = np.array(
                 [
                     [0, box_coords[1], box_coords[0]],  # [z, y1, x1]
