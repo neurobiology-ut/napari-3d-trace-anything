@@ -1,6 +1,3 @@
-# Adapted from napari-gc-analysis (Apache-2.0)
-# https://github.com/neurobiology-ut/napari-gc-analysis
-
 import math
 from importlib.resources import as_file, files
 
