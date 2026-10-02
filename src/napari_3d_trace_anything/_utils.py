@@ -11,12 +11,12 @@ from skimage.measure import label, regionprops
 
 
 class SAMSegmenter:
-    """SAMを使用したセグメンテーションを行うクラス"""
+    """Segments images with a SAM predictor."""
 
     def __init__(self, predictor):
         """
         Args:
-            predictor (SamPredictor): SAMのpredictor
+            predictor (SamPredictor): SAM predictor
         """
         if not (
             hasattr(predictor, "set_image") and hasattr(predictor, "predict")
@@ -59,33 +59,33 @@ class SAMSegmenter:
         return predict_fn
 
     def segment(self, image, box):
-        """画像のセグメンテーションを行う
+        """Segment an image with a box prompt.
 
         Args:
-            image (np.ndarray): 入力画像
-            box (np.ndarray or list): バウンディングボックス
+            image (np.ndarray): input image
+            box (np.ndarray or list): bounding box
 
         Returns:
-            np.ndarray: セグメンテーションマスク
+            np.ndarray: segmentation mask
         """
-        # boxをnumpy配列に変換
+        # convert the box to a numpy array
         box = np.array(box)
 
-        # グレースケール画像の場合、RGB形式に変換
+        # SAM expects RGB; convert grayscale
         if len(image.shape) == 2:
             image = gray2rgb(image)
 
-        # 画像が前回と異なる場合のみset_imageを実行
+        # only call set_image when the image changed
         if self.current_image is None or not np.array_equal(
             image, self.current_image
         ):
             self.predictor.set_image(image)
             self.current_image = image
 
-        # ボックスプロンプトの変換
-        # box形式1: [[z, y1, x1], [z, y1, x2], [z, y2, x2], [z, y2, x1]]
-        # box形式2: [x1, y1, x2, y2]
-        if len(box.shape) == 2:  # 形式1の場合
+        # convert the box prompt
+        # format 1: [[z, y1, x1], [z, y1, x2], [z, y2, x2], [z, y2, x1]]
+        # format 2: [x1, y1, x2, y2]
+        if len(box.shape) == 2:  # format 1
             input_box = np.array(
                 [
                     box[0, 2],  # x1
@@ -94,10 +94,10 @@ class SAMSegmenter:
                     box[2, 1],  # y2
                 ]
             )
-        else:  # 形式2の場合
+        else:  # format 2
             input_box = box
 
-        # マスクの生成
+        # predict the mask
         masks, _, _ = self.predictor.predict(
             box=input_box[None, :], multimask_output=False
         )
@@ -143,33 +143,32 @@ def box_to_xyxy(box):
 
 
 def create_box(props, mergin_ratio=0.0):
-    """RegionPropertiesオブジェクトからバウンディングボックスを作成
+    """Bounding box of a RegionProperties object.
 
     Args:
         props: skimage.measure.RegionProperties object
-        mergin_ratio (float): バウンディングボックスのマージン比率
+        mergin_ratio (float): margin as a fraction of the box size
 
     Returns:
-        list: [x1, y1, x2, y2]形式のバウンディングボックス
+        list: box as [x1, y1, x2, y2] (exclusive max)
     """
     minr, minc, maxr, maxc = props.bbox
     mergin_r = (maxr - minr) * mergin_ratio
     mergin_c = (maxc - minc) * mergin_ratio
     return [minc - mergin_c, minr - mergin_r, maxc + mergin_c, maxr + mergin_r]
-    # return [minc, minr, maxc, maxr]  # x1, y1, x2, y2の順序
 
 
 def create_boxes_list(
     labels, margin_ratio=0.0, max_objects=0, min_area=0, merge_blobs=False
 ):
-    """ラベル画像から複数のバウンディングボックスを作成
+    """Prompt boxes from a label image.
 
     Args:
-        labels: ラベル付けされた画像。同じラベル値を持つ複数のblobが存在する場合、
-               それぞれのblobに対して個別のバウンディングボックスが生成されます。
-        margin_ratio (float): バウンディングボックスのマージン比率
-        max_objects (int): ラベルごとの最大オブジェクト数 (0=無制限)
-        min_area (int): 最小面積閾値 (0=フィルタなし)
+        labels: label image. By default each blob of a label gets its
+               own box.
+        margin_ratio (float): margin as a fraction of the box size
+        max_objects (int): largest N blobs per label (0 = all)
+        min_area (int): minimum blob area (0 = no filter)
         merge_blobs (bool): one box around all blobs of a label, as in the
             paper, instead of one box per blob. ``min_area`` then applies
             to the label's total area and ``max_objects`` has no effect.
@@ -177,36 +176,33 @@ def create_boxes_list(
     Returns:
         tuple: (boxes, label_values)
             boxes: [[z, y1, x1], [z, y1, x2], [z, y2, x2], [z, y2, x1]]
-                形式のバウンディングボックスのリスト。各要素はnp.array
-            label_values: 各バウンディングボックスに対応する元のラベル値のリスト
+                vertex arrays (np.ndarray), one per box
+            label_values: label value of each box
     """
     boxes = []
     label_values = []
 
-    # ユニークなラベル値を取得（0は背景として除外）
+    # label values, excluding background (0)
     unique_labels = np.unique(labels)
     unique_labels = unique_labels[unique_labels != 0]
 
-    # 各ラベル値について処理
     for label_val in unique_labels:
-        # 現在のラベル値のマスクを作成
         binary_mask = labels == label_val
-        # 各blobを個別にラベリング
+        # one region per blob, or one per label with merge_blobs
         components = (
             binary_mask.astype(np.uint8) if merge_blobs else label(binary_mask)
         )
         props_list = list(regionprops(components))
 
-        # 面積閾値フィルタ
+        # area filter
         if min_area > 0:
             props_list = [p for p in props_list if p.area >= min_area]
 
-        # 面積降順ソート → Top-N (sort only when needed)
+        # keep the largest N (sort only when needed)
         if max_objects > 0:
             props_list = sorted(props_list, key=lambda p: p.area, reverse=True)
             props_list = props_list[:max_objects]
 
-        # 各blobに対してバウンディングボックスを生成
         for props in props_list:
             # regionprops' bbox max is exclusive, but the next section's
             # prompt must use inclusive pixel extents: that is how the
@@ -233,24 +229,23 @@ def create_boxes_list(
 
 
 def segment_with_sam(predictor, image, box):
-    """SAMを使用して画像のセグメンテーションを行う
+    """Segment an image with a SAM predictor and a box prompt.
 
     Args:
-        predictor (SamPredictor): SAMのpredictor
-        image (np.ndarray): 入力画像
-        box (list): [x1, y1, x2, y2]形式のバウンディングボックス
+        predictor (SamPredictor): SAM predictor
+        image (np.ndarray): input image
+        box (list): box as [x1, y1, x2, y2]
 
     Returns:
-        np.ndarray: セグメンテーションマスク
+        np.ndarray: segmentation mask
     """
-    # グレースケール画像の場合、RGB形式に変換
+    # SAM expects RGB; convert grayscale
     if len(image.shape) == 2:
         image = gray2rgb(image)
 
-    # 画像をセット
     predictor.set_image(image)
 
-    # マスクの生成
+    # predict the mask
     masks, _, _ = predictor.predict(
         box=np.array(box)[None, :], multimask_output=False
     )
@@ -444,15 +439,15 @@ def autodownload(model_url):
 
 
 def preprocess(image, image_type, slice_index):
-    """画像の前処理を行う
+    """Extract one slice as a uint8 image for SAM.
 
     Args:
-        image (np.ndarray or dask.array): 入力画像
-        image_type (str): 画像タイプ
-        slice_index (int): スライスインデックス
+        image (np.ndarray or dask.array): input image
+        image_type (str): type from check_image_type
+        slice_index (int): slice to extract
 
     Returns:
-        np.ndarray: 前処理された画像
+        np.ndarray: preprocessed slice
     """
     if "stack" in image_type:
         slice_data = image[slice_index]

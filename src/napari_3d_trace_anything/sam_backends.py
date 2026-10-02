@@ -1,6 +1,3 @@
-# Remote backend adapted from napari-gc-analysis (Apache-2.0)
-# https://github.com/neurobiology-ut/napari-gc-analysis
-
 import io
 import json
 import pickle
@@ -79,7 +76,7 @@ class LocalSAMBackend:
 class RemoteSAMBackend:
     """POST a frame + single box to a remote SAM server (pickled).
 
-    Wire format matches napari-gc-analysis's server: uint8 image is
+    Wire format: the uint8 image is
     pickled into a multipart file under ``numpy_data``, box coordinates
     travel as JSON, response body is a pickled boolean mask.
 
@@ -87,7 +84,7 @@ class RemoteSAMBackend:
     which executes arbitrary Python on a malicious payload. **Only point
     this backend at SAM servers you control or trust.** Switching the
     wire format to a safer encoding (e.g. ``np.save``) would break
-    compatibility with the existing gc-analysis server; until that is
+    compatibility with existing servers; until that is
     coordinated, treat the URL as a trust boundary.
     """
 

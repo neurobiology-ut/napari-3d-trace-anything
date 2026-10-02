@@ -292,7 +292,7 @@ class TraceAnything(QWidget):
                     )
                     layer.refresh_text()
                 else:
-                    # キャンセル時はboxを削除
+                    # drop the box if the dialog was cancelled
                     layer.data = layer.data[:-1]
 
     def _clear_current_label(self, event):
@@ -682,7 +682,7 @@ class TraceAnything(QWidget):
             )
         else:
             boxes_created, label_values_created = [], []
-        # 手動boxがあるラベルは自動生成boxを使わない
+        # a manual box on this slice replaces the auto box for its label
         manual_label_set = set(label_values)
         for box, label_value in zip(boxes_created, label_values_created):
             if label_value not in manual_label_set:
@@ -698,8 +698,7 @@ class TraceAnything(QWidget):
         should_crop = width > 1024 or height > 1024
 
         if instance_mode:
-            # label_value ごとに最初のbox処理前に一度だけクリアするため、
-            # 処理済みlabel_valueを追跡する
+            # clear each label once, before its first box on this slice
             current_data = layer_data[slice_index].astype(np.int32)
             cleared_labels = set()
         new_seeds = {}
@@ -793,7 +792,7 @@ class TraceAnything(QWidget):
                 mask = largest_cc_2d(mask)
 
             if instance_mode:
-                # 同じlabel_valueの初回処理時のみ古いピクセルをクリア
+                # first box of this label: clear its old pixels
                 if label_value not in cleared_labels:
                     current_data[current_data == label_value] = 0
                     cleared_labels.add(label_value)

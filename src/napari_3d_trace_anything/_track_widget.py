@@ -1,6 +1,3 @@
-# Time-series tracking widget adapted from napari-gc-analysis (Apache-2.0)
-# https://github.com/neurobiology-ut/napari-gc-analysis
-
 import contextlib
 
 import napari
