@@ -102,8 +102,9 @@ The plugin also provides **Track Anything (time-series)**: draw one box on a sta
 
 ## Contributing
 
-Contributions are very welcome. Tests can be run with [tox], please ensure
-the coverage at least stays the same before you submit a pull request.
+Contributions are very welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for
+setup, tests and an overview of the code. Please ensure the coverage at least
+stays the same before you submit a pull request.
 
 ## License
 

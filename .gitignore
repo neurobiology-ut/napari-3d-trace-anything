@@ -82,9 +82,3 @@ venv/
 
 # written by setuptools_scm
 **/_version.py
-
-test-data*/
-
-# paper manuscript and figure scripts live in their own repos
-# (neurobiology-ut/nakanishi-2026-growth-cone)
-experimental/
