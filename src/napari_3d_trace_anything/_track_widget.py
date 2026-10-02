@@ -866,7 +866,7 @@ class TrackAnything(QWidget):
         isn't reused because the main tracker carries incremental
         state from prior frames; a cleaner fix requires splitting
         skip-detection and main-loop tracker state more explicitly.
-        Tracked as a known perf cost — see CLAUDE.md "Known
+        Tracked as a known perf cost — see CONTRIBUTING.md "Known
         limitations".
         """
         skip_count = 0
