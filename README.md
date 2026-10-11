@@ -87,7 +87,7 @@ When **instance mode** is checked, each bounding box is assigned a specific labe
 
 ## CLAMP
 
-Tracing uses CLAMP (Closed-Loop Auto-Mask Propagation), which has two loops:
+Tracing uses CLAMP (Closed-Loop Auto-Mask Propagation), described in [Nakanishi et al. (2026)](https://doi.org/10.64898/2026.10.05.756131). CLAMP has two loops:
 
 | Loop | What it does | Code |
 |---|---|---|
@@ -95,6 +95,38 @@ Tracing uses CLAMP (Closed-Loop Auto-Mask Propagation), which has two loops:
 | Inner | Refines one slice: re-box from the mask and re-segment until IoU > 0.99 or 10 iterations | `inner_loop`, called from `optimize_slice` |
 
 In instance mode with default settings (Margin Ratio 0, all filters 0, One Box per Label on), **Self-Optimization** on and off correspond to CLAMP and the outer-loop-only condition in the paper.
+
+## Citation
+
+If you use this plugin or CLAMP in your work, please cite:
+
+> Nakanishi, Y. et al. Ultrastructurally planar growth cones during neocortical axon navigation. *bioRxiv* (2026). https://doi.org/10.64898/2026.10.05.756131
+
+```bibtex
+@article{nakanishi2026planar,
+  title   = {Ultrastructurally planar growth cones during neocortical axon navigation},
+  author  = {Nakanishi, Yu and
+             Tsuboi, Masafumi and
+             Kawai, Hiroki and
+             Shibayama, Koyo and
+             Yamauchi, Kenta and
+             Looprasertkul, Sasikarn and
+             Lee, Kyungeun and
+             Komaki, Hajime and
+             Egashira, Takamitsu and
+             Suga, Shogo and
+             Murakami, Tomonari and
+             Ohki, Kenichi and
+             Hioki, Hiroyuki and
+             Ohno, Nobuhiko and
+             Mizuno, Hidenobu and
+             Hirabayashi, Yusuke},
+  journal = {bioRxiv},
+  year    = {2026},
+  doi     = {10.64898/2026.10.05.756131},
+  url     = {https://doi.org/10.64898/2026.10.05.756131}
+}
+```
 
 ## Track Anything
 
