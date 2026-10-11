@@ -102,6 +102,8 @@ If you use this plugin or CLAMP in your work, please cite:
 
 > Nakanishi, Y. et al. Ultrastructurally planar growth cones during neocortical axon navigation. *bioRxiv* (2026). https://doi.org/10.64898/2026.10.05.756131
 
+Yu Nakanishi, Masafumi Tsuboi and Hiroki Kawai contributed equally.
+
 ```bibtex
 @article{nakanishi2026planar,
   title   = {Ultrastructurally planar growth cones during neocortical axon navigation},
