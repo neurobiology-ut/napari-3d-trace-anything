@@ -1,0 +1,49 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite the paper below."
+title: napari-3d-trace-anything
+type: software
+authors:
+  - family-names: Kawai
+    given-names: Hiroki
+repository-code: "https://github.com/neurobiology-ut/napari-3d-trace-anything"
+license: Apache-2.0
+preferred-citation:
+  type: article
+  title: "Ultrastructurally planar growth cones during neocortical axon navigation"
+  journal: bioRxiv
+  year: 2026
+  doi: 10.64898/2026.10.05.756131
+  url: "https://doi.org/10.64898/2026.10.05.756131"
+  authors:
+    - family-names: Nakanishi
+      given-names: Yu
+    - family-names: Tsuboi
+      given-names: Masafumi
+    - family-names: Kawai
+      given-names: Hiroki
+    - family-names: Shibayama
+      given-names: Koyo
+    - family-names: Yamauchi
+      given-names: Kenta
+    - family-names: Looprasertkul
+      given-names: Sasikarn
+    - family-names: Lee
+      given-names: Kyungeun
+    - family-names: Komaki
+      given-names: Hajime
+    - family-names: Egashira
+      given-names: Takamitsu
+    - family-names: Suga
+      given-names: Shogo
+    - family-names: Murakami
+      given-names: Tomonari
+    - family-names: Ohki
+      given-names: Kenichi
+    - family-names: Hioki
+      given-names: Hiroyuki
+    - family-names: Ohno
+      given-names: Nobuhiko
+    - family-names: Mizuno
+      given-names: Hidenobu
+    - family-names: Hirabayashi
+      given-names: Yusuke
