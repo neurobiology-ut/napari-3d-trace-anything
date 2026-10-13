@@ -1,11 +1,8 @@
 # napari-3d-trace-anything
 
-[![License Apache Software License 2.0](https://img.shields.io/pypi/l/napari-3d-trace-anything.svg?color=green)](https://github.com/neurobiology-ut/napari-3d-trace-anything/raw/main/LICENSE)
-[![PyPI](https://img.shields.io/pypi/v/napari-3d-trace-anything.svg?color=green)](https://pypi.org/project/napari-3d-trace-anything)
-[![Python Version](https://img.shields.io/pypi/pyversions/napari-3d-trace-anything.svg?color=green)](https://python.org)
-[![tests](https://github.com/neurobiology-ut/napari-3d-trace-anything/workflows/tests/badge.svg)](https://github.com/neurobiology-ut/napari-3d-trace-anything/actions)
-[![codecov](https://codecov.io/gh/neurobiology-ut/napari-3d-trace-anything/branch/main/graph/badge.svg)](https://codecov.io/gh/neurobiology-ut/napari-3d-trace-anything)
-[![napari hub](https://img.shields.io/endpoint?url=https://api.napari-hub.org/shields/napari-3d-trace-anything)](https://napari-hub.org/plugins/napari-3d-trace-anything)
+[![License](https://img.shields.io/github/license/neurobiology-ut/napari-3d-trace-anything)](https://github.com/neurobiology-ut/napari-3d-trace-anything/blob/main/LICENSE)
+[![Python](https://img.shields.io/python/required-version-toml?tomlFilePath=https%3A%2F%2Fraw.githubusercontent.com%2Fneurobiology-ut%2Fnapari-3d-trace-anything%2Fmain%2Fpyproject.toml)](https://github.com/neurobiology-ut/napari-3d-trace-anything/blob/main/pyproject.toml)
+[![tests](https://github.com/neurobiology-ut/napari-3d-trace-anything/actions/workflows/test_and_deploy.yml/badge.svg?branch=main)](https://github.com/neurobiology-ut/napari-3d-trace-anything/actions/workflows/test_and_deploy.yml)
 
 3D tracer using Segment Anything Model
 
@@ -23,16 +20,9 @@ https://napari.org/stable/plugins/index.html
 
 ## Installation
 
-You can install `napari-3d-trace-anything` via [pip]:
-
-    pip install napari-3d-trace-anything
-
-
-
-To install latest development version :
+Install the latest version from GitHub with [pip]:
 
     pip install git+https://github.com/neurobiology-ut/napari-3d-trace-anything.git
-
 
 ## Usage
 
